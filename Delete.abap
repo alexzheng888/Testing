@@ -71,16 +71,11 @@ CLASS lcl_main DEFINITION.
     METHODS:
       constructor,
       main_processing,
-      create_aiil_wbs_elements
-        CHANGING ct_wbs_data TYPE tt_wbs_data,
 *      create_settlement_rules
 *        CHANGING ct_settlement_rules TYPE tt_settlement_rule,
 *      modify_internal_orders
 *        CHANGING ct_order_data TYPE tt_order_data,
 *      transfer_cost_revenue,
-*      get_wbs_naming_rule
-*        IMPORTING iv_hkcg_wbs        TYPE prps-pspnr
-*        RETURNING VALUE(rv_aiil_wbs) TYPE prps-pspnr,
       display_alv
         IMPORTING iv_title TYPE string OPTIONAL
         CHANGING  it_data  TYPE ANY TABLE.
@@ -105,7 +100,20 @@ CLASS lcl_main DEFINITION.
                c_kitchen_cabinet TYPE prps-post1 VALUE 'KITCHEN CABINET'.
 
     METHODS:
-          get_hkcg_wbs_data.
+      get_hkcg_wbs_data,
+      create_aiil_wbs_elements,
+      conversion_exit_abpsp_output
+        IMPORTING iv_pspnr        TYPE any
+        RETURNING VALUE(rv_pspnr) TYPE string,
+      conversion_exit_abpsp_input
+        IMPORTING iv_pspnr        TYPE any
+        RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
+      conversion_exit_abpsn_output
+        IMPORTING iv_posid        TYPE any
+        RETURNING VALUE(rv_posid) TYPE string,
+      get_aiil_wbs_naming
+        IMPORTING iv_hkcg_wbs        TYPE char24
+        RETURNING VALUE(rv_aiil_wbs) TYPE char24.
 *    get_settlement_rule_template
 *      RETURNING VALUE(rt_settlement_template) TYPE tt_settlement_rule,
 *      check_wbs_status
@@ -169,7 +177,7 @@ CLASS lcl_main IMPLEMENTATION.
     CASE 'X'.
       WHEN p_opt1.
         " Option 1: Create AIIL WBS Elements
-        create_aiil_wbs_elements( CHANGING ct_wbs_data = mt_wbs_data ).
+        create_aiil_wbs_elements( ).
 *
 *        " Prepare settlement rules for each WBS
 *        LOOP AT gt_wbs_data INTO DATA(ls_wbs).
@@ -254,21 +262,88 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD create_aiil_wbs_elements.
+    DATA lv_wbs_hkcg TYPE char24.
+    DATA lv_aiil_hkcg TYPE char24.
+    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
+    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
+    DATA et_return TYPE TABLE OF bapiret2.
+    DATA lv_aiil_pspnr TYPE ps_posnr.
 
-*    CALL FUNCTION 'BAPI_BUS2054_GETDATA'
-*     EXPORTING
-*       I_PROJECT_DEFINITION       =
-*       I_LANGUAGE                 =
-*       I_MAX_ROWS                 =
-*     TABLES
-*       IT_WBS_ELEMENT             =
-*       ET_WBS_ELEMENT             =
-*       ET_RETURN                  =
-*       EXTENSIONIN                =
-*       EXTENSIONOUT               =
-              .
+    LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
+      lv_wbs_hkcg = conversion_exit_abpsp_output( <fs_wbs_data>-pspnr ).
+      lv_aiil_hkcg = get_aiil_wbs_naming( lv_wbs_hkcg ).
+      lv_aiil_pspnr = conversion_exit_abpsp_input( lv_aiil_hkcg ).
 
+      SELECT SINGLE pspnr INTO lv_aiil_pspnr FROM prps WHERE pspnr = lv_aiil_pspnr.
+      IF sy-subrc <> 0.
+        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_data>-posid ) ).
+        CALL FUNCTION 'BAPI_BUS2054_GETDATA'
+          TABLES
+            it_wbs_element = it_wbs_element
+            et_wbs_element = et_wbs_element
+            et_return      = et_return.
+      ENDIF.
+    ENDLOOP.
 
+  ENDMETHOD.
+
+  METHOD conversion_exit_abpsp_output.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+      EXPORTING
+        input  = iv_pspnr
+      IMPORTING
+        output = rv_pspnr.
+
+  ENDMETHOD.
+
+  METHOD conversion_exit_abpsp_input.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_INPUT'
+      EXPORTING
+        input     = iv_pspnr
+      IMPORTING
+        output    = rv_pspnr
+      EXCEPTIONS
+        not_found = 1
+        OTHERS    = 2.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD conversion_exit_abpsn_output.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSN_OUTPUT'
+      EXPORTING
+        input  = iv_posid
+      IMPORTING
+        output = rv_posid.
+
+  ENDMETHOD.
+
+  METHOD get_aiil_wbs_naming.
+    DATA: lv_length TYPE i,
+          lv_prefix TYPE string,
+          lv_suffix TYPE char1.
+
+    lv_length = strlen( iv_hkcg_wbs ).
+    lv_length = lv_length - 1.
+    lv_prefix = iv_hkcg_wbs+0(lv_length).
+    lv_suffix = iv_hkcg_wbs+lv_length(1).
+
+    " Apply naming rules based on specification
+    CASE lv_suffix.
+      WHEN 'A'.  " Appliance -> X
+        rv_aiil_wbs = |{ lv_prefix }X|.
+      WHEN 'G'.  " Carcassing -> Y
+        rv_aiil_wbs = |{ lv_prefix }Y|.
+      WHEN 'K'.  " Kitchen Cabinet -> Z
+        rv_aiil_wbs = |{ lv_prefix }Z|.
+      WHEN OTHERS.
+        rv_aiil_wbs = iv_hkcg_wbs.
+    ENDCASE.
   ENDMETHOD.
 
   METHOD display_alv.
@@ -315,10 +390,6 @@ CLASS lcl_main IMPLEMENTATION.
         lr_columns->set_optimize( value = abap_true ).
 * fix key columns
         lr_columns->set_key_fixation( value = abap_true ).
-
-        lr_columns->get_column( 'MANDT' )->set_technical( ).
-
-        lr_columns->get_column( 'ZDATE' )->set_long_text( 'Execute Date' ).
 
 * Set selection mode
         lr_selections = mr_salv_table->get_selections( ).
