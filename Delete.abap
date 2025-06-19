@@ -29,11 +29,11 @@ SELECTION-SCREEN END OF BLOCK b02.
 CLASS lcl_main DEFINITION.
   PUBLIC SECTION.
     TYPES: BEGIN OF ty_wbs_data,
-             pspnr        TYPE prps-pspnr,    "WBS Element
-             posid        TYPE prps-posid,    "WBS Element
-             post1        TYPE prps-post1,    "Description
-             psphi        TYPE prps-psphi,    "Project Definition
-             objnr        TYPE prps-objnr,    "Object Number
+             pspnr TYPE prps-pspnr,    "WBS Element
+             posid TYPE prps-posid,    "WBS Element
+             post1 TYPE prps-post1,    "Description
+             psphi TYPE prps-psphi,    "Project Definition
+             objnr TYPE prps-objnr,    "Object Number
            END OF ty_wbs_data.
 
     TYPES: BEGIN OF ty_settlement_rule,
@@ -74,7 +74,7 @@ CLASS lcl_main DEFINITION.
       get_hkcg_wbs_data
         RETURNING VALUE(rt_wbs_data) TYPE tt_wbs_data,
       create_aiil_wbs_elements
-        CHANGING ct_wbs_data TYPE tt_wbs_data.
+        CHANGING ct_wbs_data TYPE tt_wbs_data,
 *      create_settlement_rules
 *        CHANGING ct_settlement_rules TYPE tt_settlement_rule,
 *      modify_internal_orders
@@ -83,9 +83,9 @@ CLASS lcl_main DEFINITION.
 *      get_wbs_naming_rule
 *        IMPORTING iv_hkcg_wbs        TYPE prps-pspnr
 *        RETURNING VALUE(rv_aiil_wbs) TYPE prps-pspnr,
-*      display_alv
-*        IMPORTING it_data  TYPE ANY TABLE
-*                  iv_title TYPE string OPTIONAL,
+      display_alv
+        IMPORTING iv_title TYPE string OPTIONAL
+        CHANGING  it_data  TYPE ANY TABLE.
 *      create_log
 *        RETURNING VALUE(rv_log_handle) TYPE balloghndl,
 *      add_message_to_log
@@ -98,6 +98,7 @@ CLASS lcl_main DEFINITION.
     DATA mt_wbs_data            TYPE tt_wbs_data.
     DATA mt_settlement_rules    TYPE tt_settlement_rule.
     DATA mt_order_data          TYPE tt_order_data.
+    DATA mr_salv_table TYPE REF TO cl_salv_table.
 
     CONSTANTS: c_company_hkcg    TYPE bukrs VALUE 'HKCG',
                c_company_aiil    TYPE bukrs VALUE 'AIIL',
@@ -213,6 +214,8 @@ CLASS lcl_main IMPLEMENTATION.
 *        " Option 3: Transfer Cost and Revenue
 *        transfer_cost_revenue( ).
     ENDCASE.
+
+    display_alv( CHANGING it_data = mt_wbs_data ).
   ENDMETHOD.
 
   METHOD get_hkcg_wbs_data.
@@ -248,24 +251,89 @@ CLASS lcl_main IMPLEMENTATION.
       ENDIF.
     ENDLOOP.
 
-*    LOOP AT lt_prps INTO DATA(ls_prps).
-*      " Check WBS status - not closed
-*      IF check_wbs_status( ls_prps-pspnr ) = abap_true.
-*        CLEAR: ls_wbs_data.
-*        ls_wbs_data-pspnr = ls_prps-pspnr.
-*        ls_wbs_data-post1 = ls_prps-post1.
-*        ls_wbs_data-pbukr = ls_prps-pbukr.
-*        ls_wbs_data-erdat = ls_prps-erdat.
-*        ls_wbs_data-psphi = ls_prps-psphi.
-*        ls_wbs_data-objnr = ls_prps-objnr.
-**          ls_wbs_data-message_type = c_icon_green.
-*        ls_wbs_data-message = 'Ready for processing'.
-*        APPEND ls_wbs_data TO mt_wbs_data.
-*      ENDIF.
-*    ENDLOOP.
   ENDMETHOD.
 
   METHOD create_aiil_wbs_elements.
+
+*    CALL FUNCTION 'BAPI_BUS2054_GETDATA'
+*     EXPORTING
+*       I_PROJECT_DEFINITION       =
+*       I_LANGUAGE                 =
+*       I_MAX_ROWS                 =
+*     TABLES
+*       IT_WBS_ELEMENT             =
+*       ET_WBS_ELEMENT             =
+*       ET_RETURN                  =
+*       EXTENSIONIN                =
+*       EXTENSIONOUT               =
+              .
+
+
+  ENDMETHOD.
+
+  METHOD display_alv.
+    DATA: lr_columns         TYPE REF TO cl_salv_columns_table,
+          lr_display         TYPE REF TO cl_salv_display_settings,
+          lv_title           TYPE lvc_title,
+          lv_report          TYPE sycprog,
+          lv_pfstatus        TYPE sypfkey,
+          lv_stext           TYPE scrtext_s,
+          lv_ltext           TYPE scrtext_l,
+          lr_selections      TYPE REF TO cl_salv_selections,
+          lr_layout_settings TYPE REF TO cl_salv_layout,
+          ls_layout_key      TYPE salv_s_layout_key,
+          lr_events          TYPE REF TO cl_salv_events_table.
+
+    DEFINE set_column_position.
+      lr_columns->set_column_position( columnname = &1
+                                       position   = &2 ).
+    END-OF-DEFINITION.
+
+    IF 1 = 2.
+      lv_report = sy-repid.
+      lv_pfstatus = 'DEL_STATUS'.
+    ELSE.
+      lv_report = 'SAPLSALV'.
+      lv_pfstatus = 'STANDARD'.
+    ENDIF.
+
+* Create an ALV table
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table = mr_salv_table
+          CHANGING
+            t_table      = it_data ).
+
+        mr_salv_table->set_screen_status(
+          pfstatus      =  lv_pfstatus
+          report        =  lv_report
+          set_functions =  mr_salv_table->c_functions_all ).
+
+        lr_columns = mr_salv_table->get_columns( ).
+* optimize columns' width
+        lr_columns->set_optimize( value = abap_true ).
+* fix key columns
+        lr_columns->set_key_fixation( value = abap_true ).
+
+        lr_columns->get_column( 'MANDT' )->set_technical( ).
+
+        lr_columns->get_column( 'ZDATE' )->set_long_text( 'Execute Date' ).
+
+* Set selection mode
+        lr_selections = mr_salv_table->get_selections( ).
+        lr_selections->set_selection_mode( if_salv_c_selection_mode=>row_column ).
+
+        lr_layout_settings = mr_salv_table->get_layout( ).
+        ls_layout_key-report = sy-repid.
+        lr_layout_settings->set_key( ls_layout_key ).
+        lr_layout_settings->set_save_restriction( if_salv_c_layout=>restrict_none ).
+
+* Display the table
+        mr_salv_table->display( ).
+      CATCH cx_root INTO DATA(lx_root).
+        MESSAGE lx_root->get_text( ) TYPE 'E'.
+    ENDTRY.
 
   ENDMETHOD.
 
