@@ -71,8 +71,6 @@ CLASS lcl_main DEFINITION.
     METHODS:
       constructor,
       main_processing,
-      get_hkcg_wbs_data
-        RETURNING VALUE(rt_wbs_data) TYPE tt_wbs_data,
       create_aiil_wbs_elements
         CHANGING ct_wbs_data TYPE tt_wbs_data,
 *      create_settlement_rules
@@ -106,7 +104,9 @@ CLASS lcl_main DEFINITION.
                c_carcassing      TYPE prps-post1 VALUE 'CARCASSING',
                c_kitchen_cabinet TYPE prps-post1 VALUE 'KITCHEN CABINET'.
 
-*    METHODS: get_settlement_rule_template
+    METHODS:
+          get_hkcg_wbs_data.
+*    get_settlement_rule_template
 *      RETURNING VALUE(rt_settlement_template) TYPE tt_settlement_rule,
 *      check_wbs_status
 *        IMPORTING iv_wbs_element     TYPE prps-pspnr
@@ -163,7 +163,7 @@ CLASS lcl_main IMPLEMENTATION.
 
   METHOD main_processing.
     " Get HKCG WBS data
-    mt_wbs_data = get_hkcg_wbs_data( ).
+    get_hkcg_wbs_data( ).
 
     " Process based on selected option
     CASE 'X'.
