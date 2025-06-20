@@ -29,15 +29,17 @@ SELECTION-SCREEN END OF BLOCK b02.
 CLASS lcl_main DEFINITION.
   PUBLIC SECTION.
     TYPES: BEGIN OF ty_wbs_data,
-             pspnr TYPE prps-pspnr,    "WBS Element
-             posid TYPE prps-posid,    "WBS Element
-             post1 TYPE prps-post1,    "Description
              psphi TYPE prps-psphi,    "Project Definition
+             posid TYPE prps-posid,    "WBS Element
+             pspnr TYPE prps-pspnr,    "WBS Element
+             post1 TYPE prps-post1,    "Description
              objnr TYPE prps-objnr,    "Object Number
            END OF ty_wbs_data.
 
-    TYPES: BEGIN OF ty_settlement_rule,
-             pspnr        TYPE prps-pspnr,    "WBS Element
+    TYPES: BEGIN OF ty_wbs_settlement_rule,
+             psphi        TYPE prps-psphi,    "Project Definition
+*             posid_hkcg   TYPE prps-posid,    "HKCG WBS Element
+             posid        TYPE prps-posid,    "AIIL WBS Element
              post1        TYPE prps-post1,    "Description
              lfdnr        TYPE cobrb-lfdnr,   "Sequence Number
              perbz        TYPE cobrb-perbz,   "Settlement Type
@@ -48,7 +50,7 @@ CLASS lcl_main DEFINITION.
              kostl        TYPE cobrb-kostl,   "Cost Center
              message      TYPE string,        "Message
              message_type TYPE icon_d,       "Message Type Icon
-           END OF ty_settlement_rule.
+           END OF ty_wbs_settlement_rule.
 
     TYPES: BEGIN OF ty_order_data,
              pspnr        TYPE prps-pspnr,    "AIIL WBS
@@ -64,9 +66,9 @@ CLASS lcl_main DEFINITION.
              message_type TYPE icon_d,       "Message Type Icon
            END OF ty_order_data.
 
-    TYPES: tt_wbs_data        TYPE TABLE OF ty_wbs_data WITH EMPTY KEY,
-           tt_settlement_rule TYPE TABLE OF ty_settlement_rule WITH EMPTY KEY,
-           tt_order_data      TYPE TABLE OF ty_order_data WITH EMPTY KEY.
+    TYPES: tt_wbs_data            TYPE TABLE OF ty_wbs_data WITH EMPTY KEY,
+           tt_wbs_settlement_rule TYPE TABLE OF ty_wbs_settlement_rule WITH EMPTY KEY,
+           tt_order_data          TYPE TABLE OF ty_order_data WITH EMPTY KEY.
 
     METHODS:
       constructor,
@@ -89,7 +91,7 @@ CLASS lcl_main DEFINITION.
   PRIVATE SECTION.
     DATA mv_log_handle TYPE balloghndl.
     DATA mt_wbs_data            TYPE tt_wbs_data.
-    DATA mt_settlement_rules    TYPE tt_settlement_rule.
+    DATA mt_wbs_settlement_rules    TYPE tt_wbs_settlement_rule.
     DATA mt_order_data          TYPE tt_order_data.
     DATA mr_salv_table TYPE REF TO cl_salv_table.
 
@@ -101,19 +103,22 @@ CLASS lcl_main DEFINITION.
 
     METHODS:
       get_hkcg_wbs_data,
-      create_aiil_wbs_elements,
-      conversion_exit_abpsp_output
-        IMPORTING iv_pspnr        TYPE any
-        RETURNING VALUE(rv_pspnr) TYPE string,
+      prepare_aiil_wbs_settl_rule,
+*      conversion_exit_abpsp_output
+*        IMPORTING iv_pspnr        TYPE ps_posnr
+*        RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
       conversion_exit_abpsp_input
-        IMPORTING iv_pspnr        TYPE any
+        IMPORTING iv_posid        TYPE ps_posid
         RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
-      conversion_exit_abpsn_output
-        IMPORTING iv_posid        TYPE any
-        RETURNING VALUE(rv_posid) TYPE string,
+*      conversion_exit_abpsn_output
+*        IMPORTING iv_posid        TYPE ps_posid
+*        RETURNING VALUE(rv_posid) TYPE ps_posid,
       get_aiil_wbs_naming
-        IMPORTING iv_hkcg_wbs        TYPE char24
-        RETURNING VALUE(rv_aiil_wbs) TYPE char24.
+        IMPORTING iv_hkcg_wbs        TYPE ps_posid
+        RETURNING VALUE(rv_aiil_wbs) TYPE ps_posid,
+      copy_wbs_to_aiil
+        IMPORTING is_hkcg_wbs        TYPE bapi_bus2054_detail
+        RETURNING VALUE(rs_aiil_wbs) TYPE bapi_bus2054_new.
 *    get_settlement_rule_template
 *      RETURNING VALUE(rt_settlement_template) TYPE tt_settlement_rule,
 *      check_wbs_status
@@ -176,8 +181,8 @@ CLASS lcl_main IMPLEMENTATION.
     " Process based on selected option
     CASE 'X'.
       WHEN p_opt1.
-        " Option 1: Create AIIL WBS Elements
-        create_aiil_wbs_elements( ).
+        " Prepare AIIL WBS Elements and Settlement Rule
+        prepare_aiil_wbs_settl_rule( ).
 *
 *        " Prepare settlement rules for each WBS
 *        LOOP AT gt_wbs_data INTO DATA(ls_wbs).
@@ -223,7 +228,7 @@ CLASS lcl_main IMPLEMENTATION.
 *        transfer_cost_revenue( ).
     ENDCASE.
 
-    display_alv( CHANGING it_data = mt_wbs_data ).
+    display_alv( CHANGING it_data = mt_wbs_settlement_rules ).
   ENDMETHOD.
 
   METHOD get_hkcg_wbs_data.
@@ -261,47 +266,110 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
-  METHOD create_aiil_wbs_elements.
-    DATA lv_wbs_hkcg TYPE char24.
-    DATA lv_aiil_hkcg TYPE char24.
-    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
-    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
-    DATA et_return TYPE TABLE OF bapiret2.
-    DATA lv_aiil_pspnr TYPE ps_posnr.
+  METHOD prepare_aiil_wbs_settl_rule.
+
+    DATA lv_wbs_aiil TYPE ps_posid.
+    DATA lv_pspnr TYPE ps_posnr.
+    DATA lt_cobrb TYPE TABLE OF cobrb WITH EMPTY KEY.
+
+    SORT mt_wbs_data BY psphi posid.
 
     LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
-      lv_wbs_hkcg = conversion_exit_abpsp_output( <fs_wbs_data>-pspnr ).
-      lv_aiil_hkcg = get_aiil_wbs_naming( lv_wbs_hkcg ).
-      lv_aiil_pspnr = conversion_exit_abpsp_input( lv_aiil_hkcg ).
+      CLEAR: lv_wbs_aiil, lv_pspnr.
+      lv_wbs_aiil = get_aiil_wbs_naming( <fs_wbs_data>-posid ).
+      lv_pspnr = conversion_exit_abpsp_input( lv_wbs_aiil ).
 
-      SELECT SINGLE pspnr INTO lv_aiil_pspnr FROM prps WHERE pspnr = lv_aiil_pspnr.
-      IF sy-subrc <> 0.
-        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_data>-posid ) ).
-        CALL FUNCTION 'BAPI_BUS2054_GETDATA'
-          TABLES
-            it_wbs_element = it_wbs_element
-            et_wbs_element = et_wbs_element
-            et_return      = et_return.
+      IF lv_pspnr IS NOT INITIAL.  "WBS Element exists
+        CONTINUE.
       ENDIF.
+
+      SELECT objnr lfdnr perbz urzuo prozs konty hkont
+        INTO CORRESPONDING FIELDS OF TABLE lt_cobrb
+        FROM cobrb
+       WHERE objnr = <fs_wbs_data>-objnr.
+
+      LOOP AT lt_cobrb ASSIGNING FIELD-SYMBOL(<fs_cobrb>).
+        APPEND INITIAL LINE TO mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
+        MOVE-CORRESPONDING <fs_cobrb> TO <fs_wbs_rule>.
+        <fs_wbs_rule>-psphi = <fs_wbs_data>-psphi.
+        <fs_wbs_rule>-post1 = <fs_wbs_data>-post1.
+      ENDLOOP.
     ENDLOOP.
 
   ENDMETHOD.
 
-  METHOD conversion_exit_abpsp_output.
+*  METHOD create_aiil_wbs_elements.
+*    DATA lv_wbs_hkcg TYPE char24.
+*    DATA lv_aiil_hkcg TYPE char24.
+*    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
+*    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
+*    DATA et_return TYPE TABLE OF bapiret2.
+*    DATA lv_aiil_pspnr TYPE ps_posnr.
+*    DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
+*
+*    SORT mt_wbs_data BY psphi posid.
+*
+*    LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
+**      AT NEW psphi.
+**      ENDAT.
+*
+*      CLEAR: it_wbs_element, et_wbs_element, et_return.
+*
+*
+*      lv_wbs_hkcg = conversion_exit_abpsp_output( <fs_wbs_data>-pspnr ).
+*      lv_aiil_hkcg = get_aiil_wbs_naming( lv_wbs_hkcg ).
+*      lv_aiil_pspnr = conversion_exit_abpsp_input( lv_aiil_hkcg ).
+*
+*      IF lv_aiil_pspnr IS INITIAL.  "WBS Element not exist
+*        it_wbs_element = VALUE #( BASE it_wbs_element ( wbs_element = <fs_wbs_data>-posid ) ).
+*      ENDIF.
+*
+*      CHECK it_wbs_element[] IS NOT INITIAL.
+*      CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+*
+*      CALL FUNCTION 'BAPI_BUS2054_GETDATA'
+*        TABLES
+*          it_wbs_element = it_wbs_element
+*          et_wbs_element = et_wbs_element
+*          et_return      = et_return.
+*
+*      IF et_wbs_element[] IS NOT INITIAL.
+*        CLEAR et_return.
+*        DATA(ls_hkcg_wbs) = et_wbs_element[ 1 ].
+*        DATA(ls_aiil_wbs) = copy_wbs_to_aiil( ls_hkcg_wbs ).
+*
+*        APPEND ls_aiil_wbs TO it_wbs_aiil.
+*        CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
+*          EXPORTING
+*            i_project_definition = <fs_wbs_data>
+*          TABLES
+*            it_wbs_element       = it_wbs_aiil
+*            et_return            = et_return.
+*      ENDIF.
+*
+*
+*
+**      AT END OF psphi.
+**      ENDAT.
+*    ENDLOOP.
+*
+*  ENDMETHOD.
 
-    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
-      EXPORTING
-        input  = iv_pspnr
-      IMPORTING
-        output = rv_pspnr.
-
-  ENDMETHOD.
+*  METHOD conversion_exit_abpsp_output.
+*
+*    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+*      EXPORTING
+*        input  = iv_pspnr
+*      IMPORTING
+*        output = rv_pspnr.
+*
+*  ENDMETHOD.
 
   METHOD conversion_exit_abpsp_input.
 
     CALL FUNCTION 'CONVERSION_EXIT_ABPSP_INPUT'
       EXPORTING
-        input     = iv_pspnr
+        input     = iv_posid
       IMPORTING
         output    = rv_pspnr
       EXCEPTIONS
@@ -313,15 +381,15 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
-  METHOD conversion_exit_abpsn_output.
-
-    CALL FUNCTION 'CONVERSION_EXIT_ABPSN_OUTPUT'
-      EXPORTING
-        input  = iv_posid
-      IMPORTING
-        output = rv_posid.
-
-  ENDMETHOD.
+*  METHOD conversion_exit_abpsn_output.
+*
+*    CALL FUNCTION 'CONVERSION_EXIT_ABPSN_OUTPUT'
+*      EXPORTING
+*        input  = iv_posid
+*      IMPORTING
+*        output = rv_posid.
+*
+*  ENDMETHOD.
 
   METHOD get_aiil_wbs_naming.
     DATA: lv_length TYPE i,
@@ -344,6 +412,11 @@ CLASS lcl_main IMPLEMENTATION.
       WHEN OTHERS.
         rv_aiil_wbs = iv_hkcg_wbs.
     ENDCASE.
+  ENDMETHOD.
+
+  METHOD copy_wbs_to_aiil.
+    MOVE-CORRESPONDING is_hkcg_wbs TO rs_aiil_wbs.
+    rs_aiil_wbs-company_code = c_company_aiil.
   ENDMETHOD.
 
   METHOD display_alv.
