@@ -259,11 +259,12 @@ CLASS lcl_main IMPLEMENTATION.
     DATA et_return TYPE TABLE OF bapiret2.
     DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
     DATA ls_wbs_aiil TYPE bapi_bus2054_new.
+    DATA lv_msg TYPE string.
 
 
     LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
       AT NEW posid.
-        CLEAR: it_wbs_element, et_wbs_element, et_return.
+        CLEAR: it_wbs_element, et_wbs_element, et_return, lv_msg.
 
         it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid_hkcg ) ).
         CALL FUNCTION 'BAPI_BUS2054_GETDATA'
@@ -273,8 +274,14 @@ CLASS lcl_main IMPLEMENTATION.
             et_return      = et_return.
 
         IF et_wbs_element IS INITIAL.
-          "TODO Error msg
+          LOOP AT et_return ASSIGNING FIELD-SYMBOL(<fs_return>)
+                            WHERE type CA 'EAX'.
+            CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+          ENDLOOP.
+          CONDENSE lv_msg.
         ELSE.
+          CLEAR: ls_wbs_element, ls_wbs_aiil, it_wbs_aiil, et_return.
+
           ls_wbs_element = et_wbs_element[ 1 ].
           ls_wbs_aiil = copy_wbs_to_aiil( ls_wbs_element ).
           ls_wbs_aiil-wbs_element = <fs_wbs_rule>-posid.
@@ -282,18 +289,49 @@ CLASS lcl_main IMPLEMENTATION.
 
           CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
 
-
-
           CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
             EXPORTING
               i_project_definition = ls_wbs_element-project_definition
             TABLES
               it_wbs_element       = it_wbs_aiil
               et_return            = et_return.
-        ENDIF.
 
+          DELETE et_return WHERE type NA 'EAX'.
+          IF et_return IS NOT INITIAL.
+            LOOP AT et_return ASSIGNING <fs_return>.
+              CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+            ENDLOOP.
+            CONDENSE lv_msg.
+
+            CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+          ELSE.
+            CLEAR et_return.
+            CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+              TABLES
+                et_return = et_return.
+
+            DELETE et_return WHERE type NA 'EAX'.
+            IF et_return IS NOT INITIAL.
+              LOOP AT et_return ASSIGNING <fs_return>.
+                CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+              ENDLOOP.
+              CONDENSE lv_msg.
+
+              CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+            ELSE.
+              CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+                EXPORTING
+                  wait = 'X'.
+            ENDIF.
+          ENDIF.
+        ENDIF.
       ENDAT.
 
+
+      IF lv_msg IS NOT INITIAL.
+        <fs_wbs_rule>-message_type = c_icon_red.
+        <fs_wbs_rule>-message = lv_msg.
+      ENDIF.
     ENDLOOP.
 
   ENDMETHOD.
