@@ -48,7 +48,7 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
-             message      TYPE string,        "Message
+             message      TYPE bapi_msg,        "Message
              message_type TYPE icon_d,       "Message Type Icon
            END OF ty_wbs_settlement_rule.
 
@@ -62,7 +62,7 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
-             message      TYPE string,        "Message
+             message      TYPE bapi_msg,        "Message
              message_type TYPE icon_d,       "Message Type Icon
            END OF ty_order_data.
 
@@ -80,7 +80,9 @@ CLASS lcl_main DEFINITION.
 *      transfer_cost_revenue,
       display_alv
         IMPORTING iv_title TYPE string OPTIONAL
-        CHANGING  it_data  TYPE ANY TABLE.
+        CHANGING  it_data  TYPE ANY TABLE,
+      on_user_command FOR EVENT added_function OF cl_salv_events
+        IMPORTING e_salv_function.
 *      create_log
 *        RETURNING VALUE(rv_log_handle) TYPE balloghndl,
 *      add_message_to_log
@@ -99,8 +101,10 @@ CLASS lcl_main DEFINITION.
                c_company_aiil    TYPE bukrs VALUE 'AIIL',
                c_appliance       TYPE prps-post1 VALUE 'APPLIANCE',
                c_carcassing      TYPE prps-post1 VALUE 'CARCASSING',
-               c_kitchen_cabinet TYPE prps-post1 VALUE 'KITCHEN CABINET'.
-
+               c_kitchen_cabinet TYPE prps-post1 VALUE 'KITCHEN CABINET',
+               c_icon_green      TYPE icon_d VALUE '@08@',
+               c_icon_red        TYPE icon_d VALUE '@0A@',
+               c_icon_yellow     TYPE icon_d VALUE '@09@'.
     METHODS:
       get_hkcg_wbs_data,
       prepare_aiil_wbs_settl_rule,
@@ -292,7 +296,10 @@ CLASS lcl_main IMPLEMENTATION.
         APPEND INITIAL LINE TO mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
         MOVE-CORRESPONDING <fs_cobrb> TO <fs_wbs_rule>.
         <fs_wbs_rule>-psphi = <fs_wbs_data>-psphi.
+        <fs_wbs_rule>-posid = lv_wbs_aiil.
         <fs_wbs_rule>-post1 = <fs_wbs_data>-post1.
+        <fs_wbs_rule>-kostl = p_kostl.
+        <fs_wbs_rule>-message_type = c_icon_green.
       ENDLOOP.
     ENDLOOP.
 
@@ -421,6 +428,7 @@ CLASS lcl_main IMPLEMENTATION.
 
   METHOD display_alv.
     DATA: lr_columns         TYPE REF TO cl_salv_columns_table,
+          lr_column          TYPE REF TO cl_salv_column_table,
           lr_display         TYPE REF TO cl_salv_display_settings,
           lv_title           TYPE lvc_title,
           lv_report          TYPE sycprog,
@@ -464,6 +472,9 @@ CLASS lcl_main IMPLEMENTATION.
 * fix key columns
         lr_columns->set_key_fixation( value = abap_true ).
 
+        lr_column ?= lr_columns->get_column( 'MESSAGE_TYPE' ).
+        lr_column->set_icon( ).
+
 * Set selection mode
         lr_selections = mr_salv_table->get_selections( ).
         lr_selections->set_selection_mode( if_salv_c_selection_mode=>row_column ).
@@ -473,6 +484,9 @@ CLASS lcl_main IMPLEMENTATION.
         lr_layout_settings->set_key( ls_layout_key ).
         lr_layout_settings->set_save_restriction( if_salv_c_layout=>restrict_none ).
 
+        lr_events = lr_salv_table->get_event( ).
+        SET HANDLER on_user_command FOR lr_events.
+
 * Display the table
         mr_salv_table->display( ).
       CATCH cx_root INTO DATA(lx_root).
@@ -481,4 +495,11 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD on_user_command.
+    CASE e_salv_function.
+      WHEN '&ZSAVE'.
+        mr_salv_table->refresh( ).
+    ENDCASE.
+  ENDMETHOD.
+  
 ENDCLASS.
