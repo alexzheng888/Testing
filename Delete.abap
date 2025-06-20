@@ -48,6 +48,7 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
+             objnr_hkcg   TYPE prps-objnr,    "Object Number
              message      TYPE bapi_msg,        "Message
              message_type TYPE icon_d,       "Message Type Icon
            END OF ty_wbs_settlement_rule.
@@ -72,23 +73,7 @@ CLASS lcl_main DEFINITION.
 
     METHODS:
       constructor,
-      main_processing,
-*      create_settlement_rules
-*        CHANGING ct_settlement_rules TYPE tt_settlement_rule,
-*      modify_internal_orders
-*        CHANGING ct_order_data TYPE tt_order_data,
-*      transfer_cost_revenue,
-      display_alv
-        IMPORTING iv_title TYPE string OPTIONAL
-        CHANGING  it_data  TYPE ANY TABLE,
-      on_user_command FOR EVENT added_function OF cl_salv_events
-        IMPORTING e_salv_function.
-*      create_log
-*        RETURNING VALUE(rv_log_handle) TYPE balloghndl,
-*      add_message_to_log
-*        IMPORTING iv_message  TYPE string
-*                  iv_msg_type TYPE symsgty DEFAULT 'I',
-*      display_log.
+      main_processing.
 
   PRIVATE SECTION.
     DATA mv_log_handle TYPE balloghndl.
@@ -108,26 +93,21 @@ CLASS lcl_main DEFINITION.
     METHODS:
       get_hkcg_wbs_data,
       prepare_aiil_wbs_settl_rule,
-*      conversion_exit_abpsp_output
-*        IMPORTING iv_pspnr        TYPE ps_posnr
-*        RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
+      create_aiil_wbs_settl_rule,
       conversion_exit_abpsp_input
         IMPORTING iv_posid        TYPE ps_posid
         RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
-*      conversion_exit_abpsn_output
-*        IMPORTING iv_posid        TYPE ps_posid
-*        RETURNING VALUE(rv_posid) TYPE ps_posid,
       get_aiil_wbs_naming
         IMPORTING iv_hkcg_wbs        TYPE ps_posid
         RETURNING VALUE(rv_aiil_wbs) TYPE ps_posid,
       copy_wbs_to_aiil
         IMPORTING is_hkcg_wbs        TYPE bapi_bus2054_detail
-        RETURNING VALUE(rs_aiil_wbs) TYPE bapi_bus2054_new.
-*    get_settlement_rule_template
-*      RETURNING VALUE(rt_settlement_template) TYPE tt_settlement_rule,
-*      check_wbs_status
-*        IMPORTING iv_wbs_element     TYPE prps-pspnr
-*        RETURNING VALUE(rv_is_valid) TYPE abap_bool.
+        RETURNING VALUE(rs_aiil_wbs) TYPE bapi_bus2054_new,
+      display_alv
+        IMPORTING iv_title TYPE string OPTIONAL
+        CHANGING  it_data  TYPE ANY TABLE,
+      on_user_command FOR EVENT added_function OF cl_salv_events
+        IMPORTING e_salv_function.
 ENDCLASS.
 
 
@@ -187,46 +167,9 @@ CLASS lcl_main IMPLEMENTATION.
       WHEN p_opt1.
         " Prepare AIIL WBS Elements and Settlement Rule
         prepare_aiil_wbs_settl_rule( ).
-*
-*        " Prepare settlement rules for each WBS
-*        LOOP AT gt_wbs_data INTO DATA(ls_wbs).
-*          DATA: lt_template TYPE tt_settlement_rule.
-*          lt_template = get_settlement_rule_template( ).
-*
-*          LOOP AT lt_template INTO DATA(ls_template).
-*            DATA: ls_settlement TYPE ty_settlement_rule.
-*            ls_settlement = ls_template.
-*            ls_settlement-pspnr = get_wbs_naming_rule( ls_wbs-pspnr ).
-*            ls_settlement-post1 = ls_wbs-post1.
-*            ls_settlement-kostl = p_kostl.
-*            APPEND ls_settlement TO gt_settlement_rules.
-*          ENDLOOP.
-*        ENDLOOP.
-*
-*        create_settlement_rules( CHANGING ct_settlement_rules = gt_settlement_rules ).
 
-*      WHEN p_opt2.
-*        " Option 2: Modify AIIL Internal Orders
-*        LOOP AT gt_wbs_data INTO ls_wbs.
-*          DATA: lt_template_order TYPE tt_settlement_rule.
-*          lt_template_order = get_settlement_rule_template( ).
-*
-*          LOOP AT lt_template_order INTO DATA(ls_template_order).
-*            DATA: ls_order TYPE ty_order_data.
-*            ls_order-pspnr = get_wbs_naming_rule( ls_wbs-pspnr ).
-*            ls_order-lfdnr = ls_template_order-lfdnr.
-*            ls_order-perbz = ls_template_order-perbz.
-*            ls_order-urzuo = ls_template_order-urzuo.
-*            ls_order-prozs = ls_template_order-prozs.
-*            ls_order-konty = ls_template_order-konty.
-*            ls_order-hkont = ls_template_order-hkont.
-*            ls_order-kostl = p_kostl.
-*            APPEND ls_order TO gt_order_data.
-*          ENDLOOP.
-*        ENDLOOP.
-*
-*        modify_internal_orders( CHANGING ct_order_data = gt_order_data ).
-*
+        create_aiil_wbs_settl_rule( ).
+
 *      WHEN p_opt3.
 *        " Option 3: Transfer Cost and Revenue
 *        transfer_cost_revenue( ).
@@ -291,11 +234,13 @@ CLASS lcl_main IMPLEMENTATION.
         INTO CORRESPONDING FIELDS OF TABLE lt_cobrb
         FROM cobrb
        WHERE objnr = <fs_wbs_data>-objnr.
+      SORT lt_cobrb BY objnr lfdnr.
 
       LOOP AT lt_cobrb ASSIGNING FIELD-SYMBOL(<fs_cobrb>).
         APPEND INITIAL LINE TO mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
         MOVE-CORRESPONDING <fs_cobrb> TO <fs_wbs_rule>.
         <fs_wbs_rule>-psphi = <fs_wbs_data>-psphi.
+        <fs_wbs_rule>-objnr_hkcg = <fs_wbs_data>-objnr.
         <fs_wbs_rule>-posid = lv_wbs_aiil.
         <fs_wbs_rule>-post1 = <fs_wbs_data>-post1.
         <fs_wbs_rule>-kostl = p_kostl.
@@ -305,72 +250,51 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
-*  METHOD create_aiil_wbs_elements.
-*    DATA lv_wbs_hkcg TYPE char24.
-*    DATA lv_aiil_hkcg TYPE char24.
-*    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
-*    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
-*    DATA et_return TYPE TABLE OF bapiret2.
-*    DATA lv_aiil_pspnr TYPE ps_posnr.
-*    DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
-*
-*    SORT mt_wbs_data BY psphi posid.
-*
-*    LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
-**      AT NEW psphi.
-**      ENDAT.
-*
-*      CLEAR: it_wbs_element, et_wbs_element, et_return.
-*
-*
-*      lv_wbs_hkcg = conversion_exit_abpsp_output( <fs_wbs_data>-pspnr ).
-*      lv_aiil_hkcg = get_aiil_wbs_naming( lv_wbs_hkcg ).
-*      lv_aiil_pspnr = conversion_exit_abpsp_input( lv_aiil_hkcg ).
-*
-*      IF lv_aiil_pspnr IS INITIAL.  "WBS Element not exist
-*        it_wbs_element = VALUE #( BASE it_wbs_element ( wbs_element = <fs_wbs_data>-posid ) ).
-*      ENDIF.
-*
-*      CHECK it_wbs_element[] IS NOT INITIAL.
-*      CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
-*
-*      CALL FUNCTION 'BAPI_BUS2054_GETDATA'
-*        TABLES
-*          it_wbs_element = it_wbs_element
-*          et_wbs_element = et_wbs_element
-*          et_return      = et_return.
-*
-*      IF et_wbs_element[] IS NOT INITIAL.
-*        CLEAR et_return.
-*        DATA(ls_hkcg_wbs) = et_wbs_element[ 1 ].
-*        DATA(ls_aiil_wbs) = copy_wbs_to_aiil( ls_hkcg_wbs ).
-*
-*        APPEND ls_aiil_wbs TO it_wbs_aiil.
-*        CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
-*          EXPORTING
-*            i_project_definition = <fs_wbs_data>
-*          TABLES
-*            it_wbs_element       = it_wbs_aiil
-*            et_return            = et_return.
-*      ENDIF.
-*
-*
-*
-**      AT END OF psphi.
-**      ENDAT.
-*    ENDLOOP.
-*
-*  ENDMETHOD.
+  METHOD create_aiil_wbs_settl_rule.
 
-*  METHOD conversion_exit_abpsp_output.
-*
-*    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
-*      EXPORTING
-*        input  = iv_pspnr
-*      IMPORTING
-*        output = rv_pspnr.
-*
-*  ENDMETHOD.
+    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
+    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
+    DATA ls_wbs_element TYPE bapi_bus2054_detail.
+    DATA et_return TYPE TABLE OF bapiret2.
+    DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
+    DATA ls_wbs_aiil TYPE bapi_bus2054_new.
+
+
+    LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
+      AT NEW posid.
+        CLEAR: it_wbs_element, et_wbs_element, et_return.
+
+        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid ) ).
+        CALL FUNCTION 'BAPI_BUS2054_GETDATA'
+          TABLES
+            it_wbs_element = it_wbs_element
+            et_wbs_element = et_wbs_element
+            et_return      = et_return.
+
+        IF et_wbs_element IS INITIAL.
+          "TODO Error msg
+        ELSE.
+          ls_wbs_element = et_wbs_element[ 1 ].
+          ls_wbs_aiil = copy_wbs_to_aiil( ls_wbs_element ).
+          ls_wbs_aiil-wbs_element = <fs_wbs_rule>-posid.
+          APPEND ls_wbs_aiil TO it_wbs_aiil.
+
+          CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+          CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
+            EXPORTING
+              i_project_definition = <fs_wbs_rule>-psphi
+            TABLES
+              it_wbs_element       = it_wbs_aiil
+              et_return            = et_return.
+        ENDIF.
+
+      ENDAT.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
 
   METHOD conversion_exit_abpsp_input.
 
@@ -387,16 +311,6 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
 
   ENDMETHOD.
-
-*  METHOD conversion_exit_abpsn_output.
-*
-*    CALL FUNCTION 'CONVERSION_EXIT_ABPSN_OUTPUT'
-*      EXPORTING
-*        input  = iv_posid
-*      IMPORTING
-*        output = rv_posid.
-*
-*  ENDMETHOD.
 
   METHOD get_aiil_wbs_naming.
     DATA: lv_length TYPE i,
@@ -424,6 +338,8 @@ CLASS lcl_main IMPLEMENTATION.
   METHOD copy_wbs_to_aiil.
     MOVE-CORRESPONDING is_hkcg_wbs TO rs_aiil_wbs.
     rs_aiil_wbs-company_code = c_company_aiil.
+    rs_aiil_wbs-plant = c_company_aiil.
+    clear: rs_aiil_wbs-wbs_up, rs_aiil_wbs-wbs_left.
   ENDMETHOD.
 
   METHOD display_alv.
@@ -445,13 +361,8 @@ CLASS lcl_main IMPLEMENTATION.
                                        position   = &2 ).
     END-OF-DEFINITION.
 
-    IF 1 = 2.
-      lv_report = sy-repid.
-      lv_pfstatus = 'DEL_STATUS'.
-    ELSE.
-      lv_report = 'SAPLSALV'.
-      lv_pfstatus = 'STANDARD'.
-    ENDIF.
+    lv_report = sy-repid.
+    lv_pfstatus = 'STANDARD'.
 
 * Create an ALV table
     TRY.
@@ -484,7 +395,7 @@ CLASS lcl_main IMPLEMENTATION.
         lr_layout_settings->set_key( ls_layout_key ).
         lr_layout_settings->set_save_restriction( if_salv_c_layout=>restrict_none ).
 
-        lr_events = lr_salv_table->get_event( ).
+        lr_events = mr_salv_table->get_event( ).
         SET HANDLER on_user_command FOR lr_events.
 
 * Display the table
@@ -501,5 +412,5 @@ CLASS lcl_main IMPLEMENTATION.
         mr_salv_table->refresh( ).
     ENDCASE.
   ENDMETHOD.
-  
+
 ENDCLASS.
