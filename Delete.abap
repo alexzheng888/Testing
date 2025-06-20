@@ -48,9 +48,10 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
-             objnr_hkcg   TYPE prps-objnr,    "Object Number
              message      TYPE bapi_msg,        "Message
              message_type TYPE icon_d,       "Message Type Icon
+             posid_hkcg   TYPE prps-posid,    "HKCG WBS Element
+             objnr_hkcg   TYPE prps-objnr,    "HKCG Object Number
            END OF ty_wbs_settlement_rule.
 
     TYPES: BEGIN OF ty_order_data,
@@ -168,7 +169,6 @@ CLASS lcl_main IMPLEMENTATION.
         " Prepare AIIL WBS Elements and Settlement Rule
         prepare_aiil_wbs_settl_rule( ).
 
-        create_aiil_wbs_settl_rule( ).
 
 *      WHEN p_opt3.
 *        " Option 3: Transfer Cost and Revenue
@@ -240,11 +240,12 @@ CLASS lcl_main IMPLEMENTATION.
         APPEND INITIAL LINE TO mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
         MOVE-CORRESPONDING <fs_cobrb> TO <fs_wbs_rule>.
         <fs_wbs_rule>-psphi = <fs_wbs_data>-psphi.
-        <fs_wbs_rule>-objnr_hkcg = <fs_wbs_data>-objnr.
         <fs_wbs_rule>-posid = lv_wbs_aiil.
         <fs_wbs_rule>-post1 = <fs_wbs_data>-post1.
         <fs_wbs_rule>-kostl = p_kostl.
         <fs_wbs_rule>-message_type = c_icon_green.
+        <fs_wbs_rule>-posid_hkcg = <fs_wbs_data>-posid.
+        <fs_wbs_rule>-objnr_hkcg = <fs_wbs_data>-objnr.
       ENDLOOP.
     ENDLOOP.
 
@@ -264,7 +265,7 @@ CLASS lcl_main IMPLEMENTATION.
       AT NEW posid.
         CLEAR: it_wbs_element, et_wbs_element, et_return.
 
-        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid ) ).
+        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid_hkcg ) ).
         CALL FUNCTION 'BAPI_BUS2054_GETDATA'
           TABLES
             it_wbs_element = it_wbs_element
@@ -281,9 +282,11 @@ CLASS lcl_main IMPLEMENTATION.
 
           CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
 
+
+
           CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
             EXPORTING
-              i_project_definition = <fs_wbs_rule>-psphi
+              i_project_definition = ls_wbs_element-project_definition
             TABLES
               it_wbs_element       = it_wbs_aiil
               et_return            = et_return.
@@ -339,7 +342,7 @@ CLASS lcl_main IMPLEMENTATION.
     MOVE-CORRESPONDING is_hkcg_wbs TO rs_aiil_wbs.
     rs_aiil_wbs-company_code = c_company_aiil.
     rs_aiil_wbs-plant = c_company_aiil.
-    clear: rs_aiil_wbs-wbs_up, rs_aiil_wbs-wbs_left.
+    CLEAR: rs_aiil_wbs-wbs_up, rs_aiil_wbs-wbs_left.
   ENDMETHOD.
 
   METHOD display_alv.
@@ -409,6 +412,9 @@ CLASS lcl_main IMPLEMENTATION.
   METHOD on_user_command.
     CASE e_salv_function.
       WHEN '&ZSAVE'.
+        IF p_opt1 = 'X'.
+          create_aiil_wbs_settl_rule( ).
+        ENDIF.
         mr_salv_table->refresh( ).
     ENDCASE.
   ENDMETHOD.
