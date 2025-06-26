@@ -92,6 +92,12 @@ CLASS lcl_main DEFINITION.
       conversion_exit_abpsn_output
         IMPORTING iv_posid        TYPE ps_posid
         RETURNING VALUE(rv_posid) TYPE ps_posid,
+      conversion_exit_obart_output
+        IMPORTING iv_konty        TYPE konty
+        RETURNING VALUE(rv_konty) TYPE char10,
+      conversion_exit_perbz_output
+        IMPORTING iv_perbz        TYPE perbz_ld
+        RETURNING VALUE(rv_perbz) TYPE char10,
       get_aiil_wbs_naming
         IMPORTING iv_hkcg_wbs        TYPE ps_posid
         RETURNING VALUE(rv_aiil_wbs) TYPE ps_posid,
@@ -309,6 +315,7 @@ CLASS lcl_main IMPLEMENTATION.
     DATA ls_opt TYPE ctu_params.
     DATA lv_index TYPE numc2.
     DATA lv_message TYPE string.
+    DATA lv_fval TYPE bdc_fval.
 
     CLEAR: mt_bdcdata, mt_messtab.
 
@@ -331,10 +338,16 @@ CLASS lcl_main IMPLEMENTATION.
       bdc_dynpro( program = 'SAPLKOBS' dynpro = '0130' ).
 *      bdc_field( fnam = 'BDC_CURSOR' fval = 'COBRB-KONTY(01)' ).
       bdc_field( fnam = 'BDC_OKCODE' fval = '=DETA' ).
-      bdc_field( fnam = |COBRB-KONTY({ lv_index })| fval = CONV #( <fs_settl_rule>-konty ) ).
+      lv_fval = conversion_exit_obart_output( <fs_settl_rule>-konty ).
+      CONDENSE lv_fval.
+      bdc_field( fnam = |COBRB-KONTY({ lv_index })| fval = lv_fval ).
       bdc_field( fnam = |DKOBR-EMPGE({ lv_index })| fval = CONV #( <fs_settl_rule>-hkont ) ).
-      bdc_field( fnam = |COBRB-PROZS({ lv_index })| fval = CONV #( <fs_settl_rule>-prozs ) ).
-      bdc_field( fnam = |COBRB-PERBZ({ lv_index })| fval = CONV #( <fs_settl_rule>-perbz ) ).
+      lv_fval = CONV #( <fs_settl_rule>-prozs ).
+      CONDENSE lv_fval.
+      bdc_field( fnam = |COBRB-PROZS({ lv_index })| fval = lv_fval ).
+      lv_fval = conversion_exit_perbz_output( <fs_settl_rule>-perbz ).
+      CONDENSE lv_fval.
+      bdc_field( fnam = |COBRB-PERBZ({ lv_index })| fval = lv_fval ).
       bdc_field( fnam = |COBRB-URZUO({ lv_index })| fval = CONV #( <fs_settl_rule>-urzuo ) ).
       bdc_field( fnam = |COBRB-EXTNR({ lv_index })| fval = CONV #( <fs_settl_rule>-lfdnr ) ).
 *      bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLKOBS                                0205BLOCK1' ).
@@ -430,6 +443,26 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD conversion_exit_obart_output.
+
+    CALL FUNCTION 'CONVERSION_EXIT_OBART_OUTPUT'
+      EXPORTING
+        input  = iv_konty
+      IMPORTING
+        output = rv_konty.
+
+  ENDMETHOD.
+
+  METHOD conversion_exit_perbz_output.
+
+    CALL FUNCTION 'CONVERSION_EXIT_PERBZ_OUTPUT'
+      EXPORTING
+        input  = iv_perbz
+      IMPORTING
+        output = rv_perbz.
+
+  ENDMETHOD.
+
   METHOD get_aiil_wbs_naming.
     DATA: lv_length TYPE i,
           lv_prefix TYPE string,
@@ -505,6 +538,8 @@ CLASS lcl_main IMPLEMENTATION.
         lr_columns->get_column( 'POSID_HKCG' )->set_technical( ).
         lr_columns->get_column( 'OBJNR_HKCG' )->set_technical( ).
         lr_columns->get_column( 'EXECUTED' )->set_technical( ).
+
+        lr_columns->get_column( 'PROZS' )->set_long_text( 'Percent %' ).
 
         lr_column ?= lr_columns->get_column( 'MESSAGE_TYPE' ).
         lr_column->set_icon( ).
