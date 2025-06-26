@@ -1,9 +1,4 @@
-# Testing
-
-P_KOSTL	Cost Center
-P_OPT1	Create AIIL WBS Element
-P_OPT2	Modify AIIL Internal Order
-P_OPT3	Transfer Cost And Revenue
-S_BUDAT	Posting Date
-S_ERDAT	WBS Create Date
-S_WBS	WBS Element
+4.1.1.	Automatically create AIIL WBS element in existing HKCG project copied from HKCG WBS element. 
+4.1.2.	 Mass Change AIIL Internal Order Settlement Rule
+4.1.3.	Automatically generate cross company FI posting to transfer cost from HKCG to AIIL 
+kK9XSVK7CRyQ85K
