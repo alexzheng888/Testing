@@ -9,11 +9,11 @@ TABLES: prps, bkpf.
 *----------------------------------------------------------------------*
 * SELECTION SCREEN
 *----------------------------------------------------------------------*
-SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-001.
-  SELECT-OPTIONS: s_proj   FOR prps-psphi OBLIGATORY MATCHCODE OBJECT prsm,
-                  s_wbs    FOR prps-posid MATCHCODE OBJECT prpm,
-                  s_erdat  FOR prps-erdat.
-  PARAMETERS:     p_kostl  TYPE cobrb-kostl MATCHCODE OBJECT kost.
+SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE text-001.
+SELECT-OPTIONS: s_proj   FOR prps-psphi OBLIGATORY MATCHCODE OBJECT prsm,
+                s_wbs    FOR prps-posid MATCHCODE OBJECT prpm,
+                s_erdat  FOR prps-erdat.
+PARAMETERS:     p_kostl  TYPE cobrb-kostl OBLIGATORY MATCHCODE OBJECT kost.
 SELECTION-SCREEN END OF BLOCK b01.
 
 
@@ -42,8 +42,8 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
-             message      TYPE bapi_msg,        "Message
              message_type TYPE icon_d,       "Message Type Icon
+             message      TYPE bapi_msg,        "Message
              posid_hkcg   TYPE prps-posid,    "HKCG WBS Element
              objnr_hkcg   TYPE prps-objnr,    "HKCG Object Number
              executed     TYPE char1,
@@ -479,6 +479,11 @@ CLASS lcl_main IMPLEMENTATION.
         lr_columns->set_optimize( value = abap_true ).
 * fix key columns
         lr_columns->set_key_fixation( value = abap_true ).
+
+        lr_columns->get_column( 'PSPHI' )->set_technical( ).
+        lr_columns->get_column( 'POSID_HKCG' )->set_technical( ).
+        lr_columns->get_column( 'OBJNR_HKCG' )->set_technical( ).
+        lr_columns->get_column( 'EXECUTED' )->set_technical( ).
 
         lr_column ?= lr_columns->get_column( 'MESSAGE_TYPE' ).
         lr_column->set_icon( ).
