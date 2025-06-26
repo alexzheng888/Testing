@@ -223,6 +223,7 @@ CLASS lcl_main IMPLEMENTATION.
     DATA lv_msg TYPE string.
     DATA lv_text TYPE string.
     DATA lv_posid TYPE prps-posid.
+    DATA lv_executed TYPE char1.
 
     LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
       CHECK <fs_wbs_rule>-executed IS INITIAL.
@@ -234,7 +235,7 @@ CLASS lcl_main IMPLEMENTATION.
           EXPORTING
             text = lv_text.
 
-        CLEAR: it_wbs_element, et_wbs_element, et_return, lv_msg.
+        CLEAR: it_wbs_element, et_wbs_element, et_return, lv_msg, lv_executed.
 
         it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid_hkcg ) ).
         CALL FUNCTION 'BAPI_BUS2054_GETDATA'
@@ -292,8 +293,20 @@ CLASS lcl_main IMPLEMENTATION.
               CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
                 EXPORTING
                   wait = 'X'.
-              <fs_wbs_rule>-executed = 'X'.
-              lv_msg = call_cj02_bdc( <fs_wbs_rule> ).
+
+              DO 10 TIMES.
+                SELECT SINGLE posid INTO lv_posid FROM prps WHERE posid = <fs_wbs_rule>-posid.
+                IF sy-subrc <> 0.
+                  WAIT UP TO 1 SECONDS.
+                ELSE.
+                  lv_executed = 'X'.
+                  EXIT.
+                ENDIF.
+              ENDDO.
+
+              IF lv_executed = 'X'.
+                lv_msg = call_cj02_bdc( <fs_wbs_rule> ).
+              ENDIF.
             ENDIF.
           ENDIF.
         ENDIF.
@@ -306,6 +319,7 @@ CLASS lcl_main IMPLEMENTATION.
         <fs_wbs_rule>-message_type = c_icon_green.
         <fs_wbs_rule>-message = 'Settlement rules created successfully'.
       ENDIF.
+      <fs_wbs_rule>-executed = lv_executed.
     ENDLOOP.
 
   ENDMETHOD.
