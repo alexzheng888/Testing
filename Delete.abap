@@ -9,11 +9,11 @@ TABLES: prps, bkpf.
 *----------------------------------------------------------------------*
 * SELECTION SCREEN
 *----------------------------------------------------------------------*
-SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE text-001.
-SELECT-OPTIONS: s_proj   FOR prps-psphi OBLIGATORY MATCHCODE OBJECT prsm,
-                s_wbs    FOR prps-posid MATCHCODE OBJECT prpm,
-                s_erdat  FOR prps-erdat.
-PARAMETERS:     p_kostl  TYPE cobrb-kostl OBLIGATORY MATCHCODE OBJECT kost.
+SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-001.
+  SELECT-OPTIONS: s_proj   FOR prps-psphi OBLIGATORY MATCHCODE OBJECT prsm,
+                  s_wbs    FOR prps-posid MATCHCODE OBJECT prpm,
+                  s_erdat  FOR prps-erdat.
+  PARAMETERS:     p_kostl  TYPE cobrb-kostl OBLIGATORY MATCHCODE OBJECT kost.
 SELECTION-SCREEN END OF BLOCK b01.
 
 
@@ -89,6 +89,9 @@ CLASS lcl_main DEFINITION.
       conversion_exit_abpsp_input
         IMPORTING iv_posid        TYPE ps_posid
         RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
+      conversion_exit_abpsn_output
+        IMPORTING iv_posid        TYPE ps_posid
+        RETURNING VALUE(rv_posid) TYPE ps_posid,
       get_aiil_wbs_naming
         IMPORTING iv_hkcg_wbs        TYPE ps_posid
         RETURNING VALUE(rv_aiil_wbs) TYPE ps_posid,
@@ -212,11 +215,19 @@ CLASS lcl_main IMPLEMENTATION.
     DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
     DATA ls_wbs_aiil TYPE bapi_bus2054_new.
     DATA lv_msg TYPE string.
+    DATA lv_text TYPE string.
+    DATA lv_posid TYPE prps-posid.
 
     LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
       CHECK <fs_wbs_rule>-executed IS INITIAL.
 
       AT NEW posid.
+        lv_posid = conversion_exit_abpsn_output( <fs_wbs_rule>-posid ).
+        lv_text = |Processing WBS { lv_posid } ...|.
+        CALL FUNCTION 'SAPGUI_PROGRESS_INDICATOR'
+          EXPORTING
+            text = lv_text.
+
         CLEAR: it_wbs_element, et_wbs_element, et_return, lv_msg.
 
         it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid_hkcg ) ).
@@ -409,6 +420,16 @@ CLASS lcl_main IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD conversion_exit_abpsn_output.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSN_OUTPUT'
+      EXPORTING
+        input  = iv_posid
+      IMPORTING
+        output = rv_posid.
+
+  ENDMETHOD.
+
   METHOD get_aiil_wbs_naming.
     DATA: lv_length TYPE i,
           lv_prefix TYPE string,
@@ -487,6 +508,7 @@ CLASS lcl_main IMPLEMENTATION.
 
         lr_column ?= lr_columns->get_column( 'MESSAGE_TYPE' ).
         lr_column->set_icon( ).
+        lr_column->set_long_text( 'Status' ).
 
 * Set selection mode
         lr_selections = mr_salv_table->get_selections( ).
@@ -509,9 +531,32 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD on_user_command.
+    DATA lv_question TYPE string.
+    DATA lv_answer TYPE char1.
+
     CASE e_salv_function.
       WHEN '&ZSAVE'.
+        lv_question = `Create all the WBS elements and settlement rules in bulk?`.
+        CALL FUNCTION 'POPUP_TO_CONFIRM'
+          EXPORTING
+            titlebar              = 'Please confirm the action'
+            text_question         = lv_question
+            text_button_1         = 'Yes'
+            text_button_2         = 'No'
+            default_button        = '2'
+            display_cancel_button = ''
+          IMPORTING
+            answer                = lv_answer
+          EXCEPTIONS
+            text_not_found        = 1
+            OTHERS                = 2.
+        IF lv_answer <> '1'.
+          EXIT.
+        ENDIF.
+
         create_aiil_wbs_settl_rule( ).
+
+        mr_salv_table->get_columns( )->set_optimize( ).
         mr_salv_table->refresh( ).
     ENDCASE.
   ENDMETHOD.
