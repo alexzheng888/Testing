@@ -42,11 +42,13 @@ CLASS lcl_main DEFINITION.
              konty        TYPE cobrb-konty,   "Category
              hkont        TYPE cobrb-hkont,   "G/L Account
              kostl        TYPE cobrb-kostl,   "Cost Center
+             " 0 - No WBS and Rules; 1 - Has WBS but no Rules; 2 - Has WBS and Rules
+             pro_step     TYPE i,
              message_type TYPE icon_d,       "Message Type Icon
              message      TYPE bapi_msg,        "Message
              posid_hkcg   TYPE prps-posid,    "HKCG WBS Element
              objnr_hkcg   TYPE prps-objnr,    "HKCG Object Number
-             executed     TYPE char1,
+*             executed     TYPE char1,
            END OF ty_wbs_settlement_rule.
 
 
@@ -65,18 +67,18 @@ CLASS lcl_main DEFINITION.
     DATA mt_bdcdata TYPE TABLE OF bdcdata.
     DATA mt_messtab TYPE TABLE OF bdcmsgcoll.
 
-    CONSTANTS: c_company_hkcg    TYPE bukrs VALUE 'HKCG',
-               c_company_aiil    TYPE bukrs VALUE 'AIIL',
-               c_appliance       TYPE prps-post1 VALUE 'APPLIANCE',
-               c_carcassing      TYPE prps-post1 VALUE 'CARCASSING',
-               c_kitchen_cabinet TYPE prps-post1 VALUE 'KITCHEN CABINET',
-               c_icon_green      TYPE icon_d VALUE '@08@',
-               c_icon_red        TYPE icon_d VALUE '@0A@',
-               c_icon_yellow     TYPE icon_d VALUE '@09@'.
+    CONSTANTS: c_company_hkcg TYPE bukrs VALUE 'HKCG',
+               c_company_aiil TYPE bukrs VALUE 'AIIL',
+               c_icon_green   TYPE icon_d VALUE '@08@',
+               c_icon_red     TYPE icon_d VALUE '@0A@',
+               c_icon_yellow  TYPE icon_d VALUE '@09@'.
     METHODS:
       get_hkcg_wbs_data,
       prepare_aiil_wbs_settl_rule,
       create_aiil_wbs_settl_rule,
+      create_aiil_wbs_element
+        IMPORTING is_wbs_settl_rule TYPE ty_wbs_settlement_rule
+        RETURNING VALUE(cv_message) TYPE string,
       call_cj02_bdc
         IMPORTING is_wbs_settl_rule TYPE ty_wbs_settlement_rule
         RETURNING VALUE(cv_message) TYPE string,
@@ -99,8 +101,9 @@ CLASS lcl_main DEFINITION.
         IMPORTING iv_perbz        TYPE perbz_ld
         RETURNING VALUE(rv_perbz) TYPE char10,
       get_aiil_wbs_naming
-        IMPORTING iv_hkcg_wbs        TYPE ps_posid
-        RETURNING VALUE(rv_aiil_wbs) TYPE ps_posid,
+        IMPORTING iv_hkcg_wbs    TYPE ps_posid
+        EXPORTING ev_aiil_wbs    TYPE ps_posid
+                  ev_hkcg_suffix TYPE char1,
       copy_wbs_to_aiil
         IMPORTING is_hkcg_wbs        TYPE bapi_bus2054_detail
         RETURNING VALUE(rs_aiil_wbs) TYPE bapi_bus2054_new,
@@ -140,6 +143,7 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD get_hkcg_wbs_data.
+    DATA lv_suffix TYPE char1.
 
     " Get HKCG WBS data using BAPI_BUS2054_GETDATA
     SELECT pspnr, posid, post1, objnr, psphi
@@ -148,10 +152,7 @@ CLASS lcl_main IMPLEMENTATION.
       WHERE posid IN @s_wbs
         AND psphi IN @s_proj
         AND erdat IN @s_erdat
-        AND pbukr = @c_company_hkcg
-        AND ( post1 = @c_appliance OR
-              post1 = @c_carcassing OR
-              post1 = @c_kitchen_cabinet ).
+        AND pbukr = @c_company_hkcg.
 
     IF mt_wbs_data[] IS NOT INITIAL.
       SELECT *
@@ -166,10 +167,21 @@ CLASS lcl_main IMPLEMENTATION.
 
     LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
       DATA(lv_tabix) = sy-tabix.
+
+      CLEAR: lv_suffix.
+      get_aiil_wbs_naming(
+        EXPORTING iv_hkcg_wbs = <fs_wbs_data>-posid
+        IMPORTING ev_hkcg_suffix = lv_suffix ).
+      IF lv_suffix NA 'AGK'.
+        DELETE mt_wbs_data INDEX lv_tabix.
+        CONTINUE.
+      ENDIF.
+
       READ TABLE lt_jest TRANSPORTING NO FIELDS
         WITH KEY objnr = <fs_wbs_data>-objnr BINARY SEARCH.
       IF sy-subrc = 0.
         DELETE mt_wbs_data INDEX lv_tabix.
+        CONTINUE.
       ENDIF.
     ENDLOOP.
 
@@ -180,16 +192,27 @@ CLASS lcl_main IMPLEMENTATION.
     DATA lv_wbs_aiil TYPE ps_posid.
     DATA lv_pspnr TYPE ps_posnr.
     DATA lt_cobrb TYPE TABLE OF cobrb WITH EMPTY KEY.
+    DATA lv_step  TYPE i.
+    DATA lv_objnr TYPE prps-objnr.
 
     SORT mt_wbs_data BY psphi posid.
 
     LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
-      CLEAR: lv_wbs_aiil, lv_pspnr.
-      lv_wbs_aiil = get_aiil_wbs_naming( <fs_wbs_data>-posid ).
+      CLEAR: lv_wbs_aiil, lv_pspnr, lv_step.
+      get_aiil_wbs_naming(
+        EXPORTING iv_hkcg_wbs = <fs_wbs_data>-posid
+        IMPORTING ev_aiil_wbs = lv_wbs_aiil ).
       lv_pspnr = conversion_exit_abpsp_input( lv_wbs_aiil ).
 
       IF lv_pspnr IS NOT INITIAL.  "WBS Element exists
-        CONTINUE.
+        lv_step = 1.
+        SELECT SINGLE b~objnr INTO lv_objnr
+          FROM prps AS a
+            INNER JOIN cobrb AS b ON a~objnr = b~objnr
+         WHERE posid = lv_wbs_aiil.
+        IF sy-subrc = 0.  "WBS and Rules already been created
+          CONTINUE.
+        ENDIF.
       ENDIF.
 
       SELECT objnr lfdnr perbz urzuo prozs konty hkont
@@ -207,6 +230,10 @@ CLASS lcl_main IMPLEMENTATION.
         <fs_wbs_rule>-kostl = p_kostl.
         <fs_wbs_rule>-posid_hkcg = <fs_wbs_data>-posid.
         <fs_wbs_rule>-objnr_hkcg = <fs_wbs_data>-objnr.
+        <fs_wbs_rule>-pro_step = lv_step.
+        IF lv_step = 1.
+          <fs_wbs_rule>-message_type = c_icon_yellow.
+        ENDIF.
       ENDLOOP.
     ENDLOOP.
 
@@ -214,19 +241,13 @@ CLASS lcl_main IMPLEMENTATION.
 
   METHOD create_aiil_wbs_settl_rule.
 
-    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
-    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
-    DATA ls_wbs_element TYPE bapi_bus2054_detail.
-    DATA et_return TYPE TABLE OF bapiret2.
-    DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
-    DATA ls_wbs_aiil TYPE bapi_bus2054_new.
     DATA lv_msg TYPE string.
     DATA lv_text TYPE string.
     DATA lv_posid TYPE prps-posid.
-    DATA lv_executed TYPE char1.
+    DATA lv_step TYPE i.
 
     LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_wbs_rule>).
-      CHECK <fs_wbs_rule>-executed IS INITIAL.
+      CHECK <fs_wbs_rule>-pro_step NE 3.
 
       AT NEW posid.
         lv_posid = conversion_exit_abpsn_output( <fs_wbs_rule>-posid ).
@@ -235,79 +256,31 @@ CLASS lcl_main IMPLEMENTATION.
           EXPORTING
             text = lv_text.
 
-        CLEAR: it_wbs_element, et_wbs_element, et_return, lv_msg, lv_executed.
+        CLEAR: lv_msg, lv_step.
 
-        it_wbs_element = VALUE #( ( wbs_element = <fs_wbs_rule>-posid_hkcg ) ).
-        CALL FUNCTION 'BAPI_BUS2054_GETDATA'
-          TABLES
-            it_wbs_element = it_wbs_element
-            et_wbs_element = et_wbs_element
-            et_return      = et_return.
+        lv_step = <fs_wbs_rule>-pro_step.
+        IF lv_step = 0.
+          lv_msg = create_aiil_wbs_element( is_wbs_settl_rule = <fs_wbs_rule> ).
+          lv_step = COND #( WHEN lv_msg IS NOT INITIAL THEN 0 ELSE 1 ).
+        ENDIF.
 
-        IF et_wbs_element IS INITIAL.
-          LOOP AT et_return ASSIGNING FIELD-SYMBOL(<fs_return>)
-                            WHERE type CA 'EAX'.
-            CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
-          ENDLOOP.
-          CONDENSE lv_msg.
-        ELSE.
-          CLEAR: ls_wbs_element, ls_wbs_aiil, it_wbs_aiil, et_return.
-
-          ls_wbs_element = et_wbs_element[ 1 ].
-          ls_wbs_aiil = copy_wbs_to_aiil( ls_wbs_element ).
-          ls_wbs_aiil-wbs_element = <fs_wbs_rule>-posid.
-          APPEND ls_wbs_aiil TO it_wbs_aiil.
-
-          CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
-
-          CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
-            EXPORTING
-              i_project_definition = ls_wbs_element-project_definition
-            TABLES
-              it_wbs_element       = it_wbs_aiil
-              et_return            = et_return.
-
-          DELETE et_return WHERE type NA 'EAX'.
-          IF et_return IS NOT INITIAL.
-            LOOP AT et_return ASSIGNING <fs_return>.
-              CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
-            ENDLOOP.
-            CONDENSE lv_msg.
-
-            CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
-          ELSE.
-            CLEAR et_return.
-            CALL FUNCTION 'BAPI_PS_PRECOMMIT'
-              TABLES
-                et_return = et_return.
-
-            DELETE et_return WHERE type NA 'EAX'.
-            IF et_return IS NOT INITIAL.
-              LOOP AT et_return ASSIGNING <fs_return>.
-                CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
-              ENDLOOP.
-              CONDENSE lv_msg.
-
-              CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+        IF lv_step = 1.
+          CLEAR lv_posid.
+          DO 10 TIMES.
+            SELECT SINGLE posid INTO lv_posid FROM prps WHERE posid = <fs_wbs_rule>-posid.
+            IF sy-subrc <> 0.
+              WAIT UP TO 1 SECONDS.
             ELSE.
-              CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
-                EXPORTING
-                  wait = 'X'.
-
-              DO 10 TIMES.
-                SELECT SINGLE posid INTO lv_posid FROM prps WHERE posid = <fs_wbs_rule>-posid.
-                IF sy-subrc <> 0.
-                  WAIT UP TO 1 SECONDS.
-                ELSE.
-                  lv_executed = 'X'.
-                  EXIT.
-                ENDIF.
-              ENDDO.
-
-              IF lv_executed = 'X'.
-                lv_msg = call_cj02_bdc( <fs_wbs_rule> ).
-              ENDIF.
+              EXIT.
             ENDIF.
+          ENDDO.
+
+          IF lv_posid IS INITIAL.
+            lv_step = 0.
+            lv_msg = |The WBS element could not be created due to an unknown reason. Please contact IT support.|.
+          ELSE.
+            lv_msg = call_cj02_bdc( <fs_wbs_rule> ).
+            lv_step = COND #( WHEN lv_msg IS NOT INITIAL THEN 1 ELSE 2 ).
           ENDIF.
         ENDIF.
       ENDAT.
@@ -317,11 +290,84 @@ CLASS lcl_main IMPLEMENTATION.
         <fs_wbs_rule>-message = lv_msg.
       ELSE.
         <fs_wbs_rule>-message_type = c_icon_green.
-        <fs_wbs_rule>-message = 'Settlement rules created successfully'.
+        <fs_wbs_rule>-message = 'WBS and settlement rules created successfully'.
       ENDIF.
-      <fs_wbs_rule>-executed = lv_executed.
+      <fs_wbs_rule>-pro_step = lv_step.
     ENDLOOP.
 
+  ENDMETHOD.
+
+  METHOD create_aiil_wbs_element.
+
+    DATA it_wbs_element TYPE TABLE OF bapi_wbs_list.
+    DATA et_wbs_element TYPE TABLE OF bapi_bus2054_detail.
+    DATA ls_wbs_element TYPE bapi_bus2054_detail.
+    DATA et_return TYPE TABLE OF bapiret2.
+    DATA it_wbs_aiil TYPE TABLE OF bapi_bus2054_new.
+    DATA ls_wbs_aiil TYPE bapi_bus2054_new.
+    DATA lv_msg TYPE string.
+
+    it_wbs_element = VALUE #( ( wbs_element = is_wbs_settl_rule-posid_hkcg ) ).
+    CALL FUNCTION 'BAPI_BUS2054_GETDATA'
+      TABLES
+        it_wbs_element = it_wbs_element
+        et_wbs_element = et_wbs_element
+        et_return      = et_return.
+
+    IF et_wbs_element IS INITIAL.
+      LOOP AT et_return ASSIGNING FIELD-SYMBOL(<fs_return>)
+                        WHERE type CA 'EAX'.
+        CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+      ENDLOOP.
+      CONDENSE lv_msg.
+    ELSE.
+      CLEAR: ls_wbs_element, ls_wbs_aiil, it_wbs_aiil, et_return.
+
+      ls_wbs_element = et_wbs_element[ 1 ].
+      ls_wbs_aiil = copy_wbs_to_aiil( ls_wbs_element ).
+      ls_wbs_aiil-wbs_element = is_wbs_settl_rule-posid.
+      APPEND ls_wbs_aiil TO it_wbs_aiil.
+
+      CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+      CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
+        EXPORTING
+          i_project_definition = ls_wbs_element-project_definition
+        TABLES
+          it_wbs_element       = it_wbs_aiil
+          et_return            = et_return.
+
+      DELETE et_return WHERE type NA 'EAX'.
+      IF et_return IS NOT INITIAL.
+        LOOP AT et_return ASSIGNING <fs_return>.
+          CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+        ENDLOOP.
+        CONDENSE lv_msg.
+
+        CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+      ELSE.
+        CLEAR et_return.
+        CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+          TABLES
+            et_return = et_return.
+
+        DELETE et_return WHERE type NA 'EAX'.
+        IF et_return IS NOT INITIAL.
+          LOOP AT et_return ASSIGNING <fs_return>.
+            CONCATENATE lv_msg <fs_return>-message INTO lv_msg SEPARATED BY space.
+          ENDLOOP.
+          CONDENSE lv_msg.
+
+          CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+        ELSE.
+          CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+            EXPORTING
+              wait = 'X'.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    cv_message = lv_msg.
   ENDMETHOD.
 
   METHOD call_cj02_bdc.
@@ -330,27 +376,24 @@ CLASS lcl_main IMPLEMENTATION.
     DATA lv_index TYPE numc2.
     DATA lv_message TYPE string.
     DATA lv_fval TYPE bdc_fval.
+    DATA lv_objnr TYPE prps-objnr.
 
     CLEAR: mt_bdcdata, mt_messtab.
 
     bdc_dynpro( program = 'SAPLCJWB' dynpro = '0100' ).
-*    bdc_field( fnam = 'BDC_CURSOR' fval = '*PRPS-POSID' ).
     bdc_field( fnam = 'BDC_OKCODE' fval = '=LETB' ).
     bdc_field( fnam = '*PRPS-POSID' fval = CONV #( is_wbs_settl_rule-posid ) ).
 
     bdc_dynpro( program = 'SAPLCJWB' dynpro = '0901' ).
     bdc_field( fnam = 'BDC_OKCODE' fval = '=ABRV' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLCJWB                                0902LISTE' ).
     bdc_field( fnam = 'BDC_CURSOR' fval = 'PRPS-STUFE(01)' ).
     bdc_field( fnam = 'RCJ_MARKL-MARK(01)' fval = 'X' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLCJWB                                3993BUTTONS' ).
 
     LOOP AT mt_wbs_settlement_rules ASSIGNING FIELD-SYMBOL(<fs_settl_rule>)
                                     WHERE psphi = is_wbs_settl_rule-psphi
                                       AND posid = is_wbs_settl_rule-posid.
       lv_index = lv_index + 1.
       bdc_dynpro( program = 'SAPLKOBS' dynpro = '0130' ).
-*      bdc_field( fnam = 'BDC_CURSOR' fval = 'COBRB-KONTY(01)' ).
       bdc_field( fnam = 'BDC_OKCODE' fval = '=DETA' ).
       lv_fval = conversion_exit_obart_output( <fs_settl_rule>-konty ).
       CONDENSE lv_fval.
@@ -364,7 +407,6 @@ CLASS lcl_main IMPLEMENTATION.
       bdc_field( fnam = |COBRB-PERBZ({ lv_index })| fval = lv_fval ).
       bdc_field( fnam = |COBRB-URZUO({ lv_index })| fval = CONV #( <fs_settl_rule>-urzuo ) ).
       bdc_field( fnam = |COBRB-EXTNR({ lv_index })| fval = CONV #( <fs_settl_rule>-lfdnr ) ).
-*      bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLKOBS                                0205BLOCK1' ).
 
       bdc_dynpro( program = 'SAPLKOBS' dynpro = '0100' ).
       bdc_field( fnam = 'BDC_OKCODE' fval = '=BACK' ).
@@ -373,20 +415,13 @@ CLASS lcl_main IMPLEMENTATION.
 
     " Final save and exit
     bdc_dynpro( program = 'SAPLKOBS' dynpro = '0130' ).
-*    bdc_field( fnam = 'BDC_CURSOR' fval = 'COBRB-KONTY(01)' ).
     bdc_field( fnam = 'BDC_OKCODE' fval = '/00' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLKOBS                                0205BLOCK1' ).
 
     bdc_dynpro( program = 'SAPLKOBS' dynpro = '0130' ).
-*    bdc_field( fnam = 'BDC_CURSOR' fval = 'COBRB-KONTY(01)' ).
     bdc_field( fnam = 'BDC_OKCODE' fval = '=BACK' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLKOBS                                0205BLOCK1' ).
 
     bdc_dynpro( program = 'SAPLCJWB' dynpro = '0901' ).
     bdc_field( fnam = 'BDC_OKCODE' fval = '=BU' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLCJWB                                0902LISTE' ).
-*    bdc_field( fnam = 'BDC_CURSOR' fval = 'PRPS-STUFE(01)' ).
-*    bdc_field( fnam = 'BDC_SUBSCR' fval = 'SAPLCJWB                                3993BUTTONS' ).
 
     " Execute BDC transaction
     ls_opt-dismode = 'N'.
@@ -408,6 +443,22 @@ CLASS lcl_main IMPLEMENTATION.
                    INTO cv_message SEPARATED BY space.
       ENDLOOP.
       CONDENSE cv_message.
+    ELSE.
+      DO 5 TIMES.
+        SELECT SINGLE b~objnr INTO lv_objnr
+          FROM prps AS a
+            INNER JOIN cobrb AS b ON a~objnr = b~objnr
+         WHERE posid = is_wbs_settl_rule-posid.
+        IF sy-subrc <> 0.
+          WAIT UP TO 1 SECONDS.
+        ELSE.
+          EXIT.
+        ENDIF.
+      ENDDO.
+
+      IF lv_objnr IS INITIAL.
+        cv_message = |The settlement rules could not be created due to an unknown reason. Please contact IT support.|.
+      ENDIF.
     ENDIF.
 
   ENDMETHOD.
@@ -490,14 +541,16 @@ CLASS lcl_main IMPLEMENTATION.
     " Apply naming rules based on specification
     CASE lv_suffix.
       WHEN 'A'.  " Appliance -> X
-        rv_aiil_wbs = |{ lv_prefix }X|.
+        ev_aiil_wbs = |{ lv_prefix }X|.
       WHEN 'G'.  " Carcassing -> Y
-        rv_aiil_wbs = |{ lv_prefix }Y|.
+        ev_aiil_wbs = |{ lv_prefix }Y|.
       WHEN 'K'.  " Kitchen Cabinet -> Z
-        rv_aiil_wbs = |{ lv_prefix }Z|.
+        ev_aiil_wbs = |{ lv_prefix }Z|.
       WHEN OTHERS.
-        rv_aiil_wbs = iv_hkcg_wbs.
+        ev_aiil_wbs = iv_hkcg_wbs.
     ENDCASE.
+
+    ev_hkcg_suffix = lv_suffix.
   ENDMETHOD.
 
   METHOD copy_wbs_to_aiil.
