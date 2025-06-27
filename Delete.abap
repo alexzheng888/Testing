@@ -44,9 +44,7 @@ CLASS lcl_main DEFINITION.
              kostl        TYPE cobrb-kostl,   "Cost Center
              message_type TYPE icon_d,       "Message Type Icon
              message      TYPE bapi_msg,        "Message
-             posid_hkcg   TYPE prps-posid,    "HKCG WBS Element
-             objnr_hkcg   TYPE prps-objnr,    "HKCG Object Number
-             executed     TYPE char1,
+             objnr_aiil   TYPE aufk-objnr,    "HKCG WBS Element
            END OF ty_interal_order.
 
     TYPES: tt_wbs_data      TYPE TABLE OF ty_wbs_data WITH EMPTY KEY,
@@ -76,6 +74,9 @@ CLASS lcl_main DEFINITION.
         EXPORTING ev_aiil_wbs    TYPE ps_posid
                   ev_hkcg_suffix TYPE char1,
       prepare_aiil_iorder_rules,
+      conversion_exit_abpsp_input
+        IMPORTING iv_posid        TYPE ps_posid
+        RETURNING VALUE(rv_pspnr) TYPE ps_posnr,
       display_alv
         IMPORTING iv_title TYPE string OPTIONAL
         CHANGING  it_data  TYPE ANY TABLE,
@@ -182,22 +183,71 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD prepare_aiil_iorder_rules.
+    DATA lv_wbs_aiil TYPE ps_posid.
+    DATA lv_pspnr TYPE ps_posnr.
 
     SORT mt_wbs_data BY psphi posid.
-
     LOOP AT mt_wbs_data ASSIGNING FIELD-SYMBOL(<fs_wbs_data>).
-      AT NEW pspnr.
-        SELECT pspel, aufnr, a~objnr, concat( aufnr, 'A' ) AS aufnr_a
-          FROM aufk as a
-           INNER JOIN @mt_wbs_data as b on b~pspnr = a~pspel
-          INTO TABLE @DATA(lt_aufk).
-        SORT lt_aufk BY pspel aufnr.
+      CLEAR: lv_wbs_aiil, lv_pspnr.
+      get_aiil_wbs_naming(
+        EXPORTING iv_hkcg_wbs = <fs_wbs_data>-posid
+        IMPORTING ev_aiil_wbs = lv_wbs_aiil ).
 
-        LOOP AT lt_aufk ASSIGNING FIELD-SYMBOL(<fs_aufk>).
+      lv_pspnr = conversion_exit_abpsp_input( lv_wbs_aiil ).
+      CHECK lv_pspnr IS NOT INITIAL.
 
-        ENDLOOP.
-      ENDAT.
+      "Get HKCG Internal Order
+      SELECT pspel, aufnr, objnr
+        INTO TABLE @DATA(lt_aufk)
+        FROM aufk
+       WHERE pspel = @<fs_wbs_data>-pspnr.
+      SORT lt_aufk BY pspel aufnr.
+
+      LOOP AT lt_aufk ASSIGNING FIELD-SYMBOL(<fs_aufk>).
+        DATA(lv_aufnr) = <fs_aufk>-aufnr && 'A'.
+        SELECT SINGLE aufnr, objnr
+          INTO @DATA(ls_aufk)
+          FROM aufk
+         WHERE aufnr = @lv_aufnr.
+        IF sy-subrc NE 0.
+          CONTINUE.
+        ELSE. "AIIL Internal Order existing
+          "Get HKCG Internal Order's settlement rules
+          SELECT objnr, lfdnr, perbz, urzuo, prozs, konty, hkont
+            INTO TABLE @DATA(lt_cobrb)
+            FROM cobrb
+           WHERE objnr = @<fs_aufk>-objnr
+             AND konty = 'SK'.  "G/L
+          SORT lt_cobrb BY objnr lfdnr.
+
+          LOOP AT lt_cobrb ASSIGNING FIELD-SYMBOL(<fs_cobrb>).
+            APPEND INITIAL LINE TO mt_interal_order ASSIGNING FIELD-SYMBOL(<fs_order>).
+            MOVE-CORRESPONDING <fs_cobrb> TO <fs_order>.
+            <fs_order>-psphi = <fs_wbs_data>-psphi.
+            <fs_order>-posid = <fs_wbs_data>-posid.
+            <fs_order>-post1 = <fs_wbs_data>-post1.
+            <fs_order>-aufnr = lv_aufnr.
+            <fs_order>-objnr_aiil = ls_aufk-objnr.
+          ENDLOOP.
+        ENDIF.
+      ENDLOOP.
     ENDLOOP.
+  ENDMETHOD.
+
+  METHOD conversion_exit_abpsp_input.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_INPUT'
+      EXPORTING
+        input     = iv_posid
+      IMPORTING
+        output    = rv_pspnr
+      EXCEPTIONS
+        not_found = 1
+        OTHERS    = 2.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
   ENDMETHOD.
 
   METHOD display_alv.
@@ -242,9 +292,8 @@ CLASS lcl_main IMPLEMENTATION.
         lr_columns->set_key_fixation( value = abap_true ).
 
         lr_columns->get_column( 'PSPHI' )->set_technical( ).
-        lr_columns->get_column( 'POSID_HKCG' )->set_technical( ).
-        lr_columns->get_column( 'OBJNR_HKCG' )->set_technical( ).
-        lr_columns->get_column( 'EXECUTED' )->set_technical( ).
+        lr_columns->get_column( 'POST1' )->set_technical( ).
+        lr_columns->get_column( 'OBJNR_AIIL' )->set_technical( ).
 
         lr_columns->get_column( 'PROZS' )->set_long_text( 'Percent %' ).
 
