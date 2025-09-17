@@ -1,0 +1,460 @@
+REPORT ytemp_demo_009.
+
+
+TABLES: vbrk.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+  PARAMETERS: p_vbeln TYPE vbrk-vbeln OBLIGATORY.
+SELECTION-SCREEN END OF BLOCK b1.
+
+CLASS lcl_main DEFINITION FINAL.
+  PUBLIC SECTION.
+    " Data structure for billing document information
+    TYPES: BEGIN OF ty_billing_doc,
+             vbeln           TYPE vbrk-vbeln,        " Billing Document No
+             fkart           TYPE vbrk-fkart,        " Billing Type
+             fkdat           TYPE vbrk-fkdat,        " Billing Date
+             waerk           TYPE vbrk-waerk,        " Document Currency
+             netwr           TYPE vbrk-netwr,        " Net Value
+             zz1_serv_from   TYPE vbrk-zz1_serv_from, " Service Period From
+             zfilename       TYPE string,            " Draft Invoice File Name
+           END OF ty_billing_doc.
+    TYPES: ty_t_billing_doc TYPE STANDARD TABLE OF ty_billing_doc WITH DEFAULT KEY.
+
+    " ALV display structure
+    TYPES: BEGIN OF ty_alv_row,
+             vbeln           TYPE vbrk-vbeln,
+             fkart           TYPE vbrk-fkart,
+             fkdat           TYPE vbrk-fkdat,
+             waerk           TYPE vbrk-waerk,
+             netwr           TYPE vbrk-netwr,
+             zz1_serv_from   TYPE vbrk-zz1_serv_from,
+             zfilename       TYPE string,
+           END OF ty_alv_row.
+    TYPES: ty_t_alv TYPE STANDARD TABLE OF ty_alv_row WITH DEFAULT KEY.
+
+    " JSON output structure
+    TYPES: BEGIN OF ty_json_output,
+             zfilename       TYPE string,
+             vbeln           TYPE string,
+             fkart           TYPE string,
+             fkdat           TYPE string,
+             waerk           TYPE string,
+             netwr           TYPE string,
+             zz1_serv_from   TYPE string,
+           END OF ty_json_output.
+    TYPES: ty_t_json_output TYPE STANDARD TABLE OF ty_json_output WITH DEFAULT KEY.
+
+    " Class data
+    CLASS-DATA: gt_billing_docs TYPE ty_t_billing_doc,
+                gt_alv          TYPE ty_t_alv,
+                go_salv         TYPE REF TO cl_salv_table.
+
+    " BTP connection parameters
+    CLASS-DATA: gv_dest   TYPE rfcdes-rfcdest VALUE 'ZBTP',
+                gv_url    TYPE string,
+                gv_system TYPE string VALUE 'CX_LM'.
+
+    " Constants for interface logging
+    CONSTANTS: gc_trno TYPE string VALUE 'SI21'.
+
+    METHODS: run.
+
+  PRIVATE SECTION.
+    METHODS: select_data,
+             read_text_filename
+               IMPORTING iv_vbeln         TYPE vbrk-vbeln
+               RETURNING VALUE(rv_filename) TYPE string,
+             build_alv,
+             on_added_function FOR EVENT added_function OF cl_salv_events_table
+               IMPORTING e_salv_function,
+             post_data,
+             post_to_btp
+               IMPORTING it_billing_docs TYPE ty_t_billing_doc
+               EXPORTING ev_status_code  TYPE i
+                         es_return       TYPE bapiret2,
+             build_json
+               IMPORTING it_billing_docs TYPE ty_t_billing_doc
+               RETURNING VALUE(rv_json)  TYPE string,
+             format_date_ddmmyyyy
+               IMPORTING iv_date         TYPE dats
+               RETURNING VALUE(rv_formatted) TYPE string,
+             save_log
+               IMPORTING iv_http_status TYPE c
+                         iv_status_code TYPE i
+                         iv_message     TYPE bapi_msg.
+ENDCLASS.
+
+CLASS lcl_main IMPLEMENTATION.
+  METHOD run.
+    " Select billing document data
+    select_data( ).
+
+    IF gt_billing_docs IS INITIAL.
+      MESSAGE 'No billing document found for the given number' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    IF sy-batch = 'X'.
+      " Background mode: automatically post data
+      post_data( ).
+    ELSE.
+      " Foreground mode: show ALV and handle manual posting
+      build_alv( ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD select_data.
+    CLEAR: gt_billing_docs, gt_alv.
+
+    " Select billing document header data
+    SELECT SINGLE vbeln, fkart, fkdat, waerk, netwr, zz1_serv_from
+      FROM vbrk
+      WHERE vbeln = @p_vbeln
+      INTO @DATA(ls_billing).
+
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    " Read draft invoice filename from text
+    DATA(lv_filename) = read_text_filename( ls_billing-vbeln ).
+
+    " Build internal table
+    APPEND VALUE ty_billing_doc(
+      vbeln = ls_billing-vbeln
+      fkart = ls_billing-fkart
+      fkdat = ls_billing-fkdat
+      waerk = ls_billing-waerk
+      netwr = ls_billing-netwr
+      zz1_serv_from = ls_billing-zz1_serv_from
+      zfilename = lv_filename ) TO gt_billing_docs.
+  ENDMETHOD.
+
+  METHOD read_text_filename.
+    " Read draft invoice filename from STXH table
+    " Object: VBBK, Text Name: Billing Doc No, ID: ZH01, Language: EN
+
+    DATA: lt_tline TYPE STANDARD TABLE OF tline,
+          lv_tdname TYPE tdobname.
+
+    lv_tdname = |{ iv_vbeln ALPHA = IN }|.
+
+    CALL FUNCTION 'READ_TEXT'
+      EXPORTING
+        client                = sy-mandt
+        id                    = 'ZH01'
+        language              = 'E'
+        name                  = lv_tdname
+        object                = 'VBBK'
+      TABLES
+        lines                 = lt_tline
+      EXCEPTIONS
+        id_does_not_exist     = 1
+        language_not_active   = 2
+        name_does_not_exist   = 3
+        object_does_not_exist = 4
+        OTHERS                = 5.
+
+    IF sy-subrc = 0 AND lines( lt_tline ) > 0.
+      " Concatenate all text lines to form filename
+      LOOP AT lt_tline INTO DATA(ls_tline).
+        IF rv_filename IS INITIAL.
+          rv_filename = ls_tline-tdline.
+        ELSE.
+          rv_filename = |{ rv_filename }{ ls_tline-tdline }|.
+        ENDIF.
+      ENDLOOP.
+      " Remove any leading/trailing spaces
+      rv_filename = condense( rv_filename ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD build_alv.
+    " Prepare ALV data
+    gt_alv = VALUE #( FOR billing IN gt_billing_docs
+                      ( vbeln = billing-vbeln
+                        fkart = billing-fkart
+                        fkdat = billing-fkdat
+                        waerk = billing-waerk
+                        netwr = billing-netwr
+                        zz1_serv_from = billing-zz1_serv_from
+                        zfilename = billing-zfilename ) ).
+
+    IF gt_alv IS INITIAL.
+      MESSAGE 'No data to display' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING r_salv_table = go_salv
+          CHANGING  t_table      = gt_alv ).
+      CATCH cx_salv_msg INTO DATA(lx_salv).
+        MESSAGE lx_salv->get_text( ) TYPE 'S' DISPLAY LIKE 'E'.
+        RETURN.
+    ENDTRY.
+
+    " Set ALV functions and layout
+    go_salv->get_functions( )->set_all( abap_true ).
+    go_salv->set_screen_status(
+      pfstatus      = 'STANDARD'
+      report        = sy-repid
+      set_functions = go_salv->c_functions_all ).
+
+    " Set column properties
+    DATA(lr_columns) = go_salv->get_columns( ).
+    lr_columns->set_optimize( abap_true ).
+
+    TRY.
+        lr_columns->get_column( 'VBELN' )->set_long_text( 'Billing Document No' ).
+        lr_columns->get_column( 'FKART' )->set_long_text( 'Billing Type' ).
+        lr_columns->get_column( 'FKDAT' )->set_long_text( 'Billing Date' ).
+        lr_columns->get_column( 'WAERK' )->set_long_text( 'Document Currency' ).
+        lr_columns->get_column( 'NETWR' )->set_long_text( 'Net Value' ).
+        lr_columns->get_column( 'ZZ1_SERV_FROM' )->set_long_text( 'Service Period From' ).
+        lr_columns->get_column( 'ZFILENAME' )->set_long_text( 'Draft Invoice Filename' ).
+      CATCH cx_root.
+        " Ignore column setting errors
+    ENDTRY.
+
+    " Set event handler for custom button
+    DATA(lo_events) = go_salv->get_event( ).
+    SET HANDLER me->on_added_function FOR lo_events.
+
+    " Display settings
+    go_salv->get_display_settings( )->set_striped_pattern( abap_true ).
+    go_salv->get_layout( )->set_key(
+      VALUE salv_s_layout_key( report = sy-repid handle = 'MAIN' ) ).
+
+    go_salv->display( ).
+  ENDMETHOD.
+
+  METHOD on_added_function.
+    " Handle custom button click
+    IF e_salv_function = '&ZPOST'.
+      post_data( ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD post_data.
+    CHECK gt_billing_docs IS NOT INITIAL.
+
+    " Post data to BTP
+    post_to_btp(
+      EXPORTING it_billing_docs = gt_billing_docs
+      IMPORTING ev_status_code  = DATA(lv_status_code)
+                es_return       = DATA(ls_return) ).
+
+    " Save interface log
+    save_log(
+      iv_http_status = ls_return-type
+      iv_status_code = lv_status_code
+      iv_message     = ls_return-message ).
+
+    " Display message
+    IF ls_return-type = 'S'.
+      MESSAGE 'Data posted successfully to BTP' TYPE 'S'.
+    ELSE.
+      MESSAGE ls_return-message TYPE ls_return-type DISPLAY LIKE 'E'.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD post_to_btp.
+    DATA: lo_http_client TYPE REF TO if_http_client,
+          lv_service     TYPE rfcdisplay-rfcsysid,
+          lv_host        TYPE rfcdisplay-rfchost,
+          lv_status_reason TYPE string.
+
+    CHECK it_billing_docs IS NOT INITIAL.
+
+    ev_status_code = 0.
+    gv_url = ''.
+
+    " Interface path for CX LM Final Invoice
+    DATA(lv_path) = '/http/cx_lm_final_invoice'.
+
+    " Get BTP destination details
+    CALL FUNCTION 'RFC_READ_HTTP_DESTINATION'
+      EXPORTING
+        destination = gv_dest
+      IMPORTING
+        servicenr   = lv_service
+        server      = lv_host
+        path_prefix = gv_url
+      EXCEPTIONS
+        OTHERS      = 1.
+
+    " Build complete URL
+    IF lv_service IS NOT INITIAL.
+      gv_url = |{ lv_host }:{ lv_service }{ gv_url }{ lv_path }|.
+    ELSE.
+      gv_url = |{ lv_host }{ gv_url }{ lv_path }|.
+    ENDIF.
+
+    " Build JSON payload
+    DATA(lv_payload) = build_json( it_billing_docs ).
+
+    " Display JSON in foreground mode for debugging
+    IF sy-batch = '' AND lv_payload IS NOT INITIAL.
+      cl_demo_output=>display_json( lv_payload ).
+    ENDIF.
+
+    TRY.
+        " Create HTTP client
+        cl_http_client=>create_by_destination(
+          EXPORTING destination = gv_dest
+          IMPORTING client = lo_http_client ).
+
+        IF lo_http_client IS INITIAL.
+          es_return-type = 'E'.
+          es_return-message = 'Failed to create HTTP client'.
+          RETURN.
+        ENDIF.
+
+        " Set request properties
+        cl_http_utility=>set_request_uri(
+          request = lo_http_client->request
+          uri = CONV #( lv_path ) ).
+
+        lo_http_client->request->set_method( if_http_request=>co_request_method_post ).
+        lo_http_client->request->set_header_field(
+          name = 'Content-Type'
+          value = 'application/json;charset=UTF-8' ).
+        lo_http_client->request->set_header_field(
+          name = 'system'
+          value = gv_system ).
+        lo_http_client->request->set_cdata( lv_payload ).
+
+        " Send request and receive response
+        lo_http_client->send( ).
+        lo_http_client->receive( ).
+
+        " Get response status
+        lo_http_client->response->get_status(
+          IMPORTING code = ev_status_code
+                    reason = lv_status_reason ).
+
+        " Handle response
+        IF ev_status_code = 200 OR ev_status_code = 201.
+          es_return-type = 'S'.
+          es_return-message = |Status: { ev_status_code } ({ lv_status_reason })|.
+        ELSE.
+          es_return-type = 'E'.
+          es_return-message = |Status: { ev_status_code } ({ lv_status_reason })|.
+        ENDIF.
+
+        " Display response in foreground mode
+        IF sy-batch = ''.
+          DATA(lv_response) = lo_http_client->response->get_cdata( ).
+          IF lv_response IS NOT INITIAL.
+            cl_demo_output=>display_json( lv_response ).
+          ENDIF.
+        ENDIF.
+
+      CATCH cx_root INTO DATA(lx_root).
+        es_return-type = 'E'.
+        es_return-message = lx_root->get_text( ).
+    ENDTRY.
+  ENDMETHOD.
+
+  METHOD build_json.
+    DATA: lt_json_output TYPE ty_t_json_output.
+
+    " Convert internal data to JSON structure
+    LOOP AT it_billing_docs INTO DATA(ls_billing).
+      APPEND VALUE ty_json_output(
+        zfilename = ls_billing-zfilename
+        vbeln = |{ ls_billing-vbeln ALPHA = OUT }|
+        fkart = |{ ls_billing-fkart }|
+        fkdat = format_date_ddmmyyyy( ls_billing-fkdat )
+        waerk = |{ ls_billing-waerk }|
+        netwr = |{ ls_billing-netwr }|
+        zz1_serv_from = format_date_ddmmyyyy( ls_billing-zz1_serv_from )
+      ) TO lt_json_output.
+    ENDLOOP.
+
+    " Serialize to JSON
+    rv_json = /ui2/cl_json=>serialize(
+      data        = lt_json_output
+      pretty_name = /ui2/cl_json=>pretty_mode-none ).
+  ENDMETHOD.
+
+  METHOD format_date_ddmmyyyy.
+    " Convert ABAP date (YYYYMMDD) to DDMMYYYY format
+    IF iv_date IS NOT INITIAL.
+      rv_formatted = |{ iv_date+6(2) }{ iv_date+4(2) }{ iv_date+0(4) }|.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD save_log.
+    " Save interface log for audit trail
+    DATA: lv_object     TYPE tnro-object VALUE 'ZLOGNUM',
+          lv_number(20) TYPE n.
+
+    " Get next log number
+    CALL FUNCTION 'NUMBER_RANGE_ENQUEUE'
+      EXPORTING
+        object = lv_object
+      EXCEPTIONS
+        OTHERS = 1.
+
+    IF sy-subrc = 0.
+      CALL FUNCTION 'NUMBER_GET_NEXT'
+        EXPORTING
+          nr_range_nr = '01'
+          object      = lv_object
+        IMPORTING
+          number      = lv_number
+        EXCEPTIONS
+          OTHERS      = 1.
+    ENDIF.
+
+    CALL FUNCTION 'NUMBER_RANGE_DEQUEUE'
+      EXPORTING
+        object = lv_object
+      EXCEPTIONS
+        OTHERS = 1.
+
+    " Create log entry
+    DATA: ls_log TYPE zint_log.
+    ls_log-lognum  = lv_number.
+    ls_log-logseq  = 1.
+    ls_log-direct  = 1.              " Outbound
+    ls_log-trno    = gc_trno.        " SI21
+    ls_log-rcvsys  = 'BOOMI'.
+    ls_log-sndsys  = 'S4HANA'.
+    ls_log-rfcdest = gv_dest.
+    ls_log-url     = gv_url.
+    ls_log-crdat   = sy-datum.
+    ls_log-crusr   = sy-uname.
+    ls_log-crtim   = sy-uzeit.
+    ls_log-hcode   = iv_status_code.
+    ls_log-status  = iv_http_status.
+    ls_log-message = iv_message.
+
+    " Add job information for background processing
+    IF sy-batch = 'X'.
+      DATA: lv_jobname  TYPE tbtcjob-jobname,
+            lv_jobcount TYPE tbtcjob-jobcount.
+
+      CALL FUNCTION 'GET_JOB_RUNTIME_INFO'
+        IMPORTING
+          jobcount = lv_jobcount
+          jobname  = lv_jobname
+        EXCEPTIONS
+          OTHERS   = 1.
+
+      ls_log-jobname = lv_jobname.
+      ls_log-jobid   = lv_jobcount.
+    ENDIF.
+
+    " Save log to database
+    MODIFY zint_log FROM ls_log.
+    COMMIT WORK AND WAIT.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA(lo_app) = NEW lcl_main( ).
+  lo_app->run( ).
